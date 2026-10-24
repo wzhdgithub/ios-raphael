@@ -63,3 +63,17 @@ fastboot boot raphael-t12-gt9886-clean.img  # 稳定版
 ## 下一轮（stage 3）预告
 
 GMU 固件（a640_gmu.bin 从 raphael vendor 固件提取）→ HFI 消息队列 → SMMU 页表上下文 → GX GDSC 上电 → 读 RBBM/CP 版本，最后才是 Mesa/freedreno 与界面合成。
+
+## t27 实机结果（2026-10-24）
+
+```
+SWEET GPU: stage2: gpu_memnoc_gfx=0x221  gpu_snoc_dvm_gfx=0x1  ddrss_gpu_axi=0x1
+SWEET GPU: stage2: gmu_rcgr=0x80000000 src=0
+SWEET GPU: stage2: clearing CMD_ROOT_OFF (0x80000000 -> 0x1)
+SWEET GPU: stage2: cx_gmu=0x4221 running
+SWEET GPU: stage2: gmu sysreset=0x1 boot_config=0 fw_init=0 hfi_ver=0
+SWEET GPU: stage2: gmu rpmh_state=0xf sptprac=0xc0 counter=21197600 Hz
+SWEET GPU: stage2=OK gmu=responding counter=measured above (firmware is stage 3)
+```
+
+判读：GCC 三时钟已开；`cx_gmu` 分支运行（CLK_OFF 清）；GMU 寄存器可读，CM3 仍在复位（sysreset=1）、固件未加载（fw_init=0）、3D 核无电（sptprac=0xc0）——全部符合预期。计数器 21.2 MHz 是 `sleep 10ms` 的调度误差（实际约 11.04ms），折算为 19.2 MHz 晶振，下轮改用 mach_absolute_time 精确测量。
