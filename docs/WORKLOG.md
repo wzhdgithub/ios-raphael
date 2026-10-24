@@ -525,3 +525,17 @@ Stage Summary:
 - **关键结论**：CX GDSC collapsed 时读 GPUCC 不会楔死 NoC（本次全程无卡死）→ stage 1 可以安全做电源时序：清 CX GDSC SW_COLLAPSE → 等 CX_HW_CTRL bit31 → GCC 三个 GPU 时钟 + GPUCC 分支 → 读 GMU 19.2MHz 计数器。
 
 **下一轮（stage 1）**：RPMh CX/MX 投票 → GPUCC 分支时钟 → a640_gmu.bin + HFI → SMMU 页表 → 3D 核上电读 RBBM。沿用 t19 降级中止原则。
+
+---
+
+## Task 36 (r35/t25) — GPU stage 1a：CX 半区上电 + GBIF（2026-10-24）
+
+**输入**：t24 实机日志（stage 0 OK）：`gx_gdscr=cx_gdscr=0x222001`（两个 GDSC collapsed）、`cx_hw_ctrl=0x5ff4`（bit31=0）、`ahb=0x80000001`（enabled-but-off）、`cx_gmu=0x80004220`、`cxo=0x80000001`、`gmu_rcgr=0x80000000 src=0`；读 GPUCC 无卡死 → 下一步可安全做上电时序。
+
+**0104（sweet_gpu.c +102 行）**：按 HackiOS step 4 的 gdsc-regulator 时序打开 GPU CX 半区——检查 bit1 硬件控制位（置位则放弃）→ 清 CX_GDSCR bit0 → 轮询 CX_HW_CTRL(0x1540) bit31 100ms → 若 GX_GDSCR 已有电则停手（脏状态，HackiOS 实测不可用且关闭会挂机）→ 使能 ahb/crc_ahb/cx_apb/cxo/cxo_aon 五分支（ahb 是 BRANCH_HALT_DELAY，状态位不可信，must=false）→ 读 GBIF scache/halt/halt_ack（全 0xffffffff 判 FAIL）→ `stage1=OK/FAIL` 判决行。`gpupower=0` 可只跑 stage 0。
+
+**范围克制**：不碰 GMU 时钟源（需要 GCC GPLL0 分频与 RCG 编程）、不加载 a640_gmu.bin、不碰 GX、不碰 SMMU——全部留给 stage 2；本轮只证明 CX 半区能上电并应答。
+
+**工程**：补丁对 0103 终态 `git apply --check` 通过（373 行结果、14 处 stage1）；构建走 fork wzhdgithub + dispatch xnu，沿用 r33 模板打包（shim/DTB/ADT/cmdline 复用，仅 payload 变化）。
+
+**下一轮判决点**：①`stage1: CX is on`；②`gbif=responding`（stage 1a 全胜）；③失效分支按 FLASH-T25 表回报。

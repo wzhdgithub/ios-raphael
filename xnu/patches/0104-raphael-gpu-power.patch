@@ -1,0 +1,131 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 9ede8f7..17cca0c 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -30,10 +30,20 @@
+  *      alive). On a fresh boot both clocks are expected to be off; that is
+  *      not a failure, it is the starting point for stage 1 (GMU firmware).
+  *
++ * Stage 1 (this file grew it after stage 0 passed on hardware): switch the
++ * GPU's CX half on the way the vendor's gdsc-regulator does -- clear the SW
++ * collapse bit of GPUCC_CX_GDSCR (0x106c) and wait for bit 31 of the
++ * hw-ctrl register (0x1540); refuse if the switch is under hardware control
++ * or if the 3D core is somehow already powered. Then enable the CX-half
++ * branches (ahb/crc_ahb/cx_apb/cxo/cxo_aon) and read GBIF (0x2c0f000): its
++ * registers are the first evidence that the GPU's CX half is really alive.
++ * The GMU's clock source, its firmware and the GX core are stage 2.
++ *
+  * Risk: reading GPUCC while the CX rail is down can wedge the NoC. The
+  * thread starts late (boot-arg gpuprobedelay, default 30 s) so the persistent
+- * log has already flushed, and it says what it is about to read before it
+- * reads it. boot-arg gpuprobe=0 disables the probe.
++ * log has already flushed, and it says what it is about to read/write before
++ * it does. boot-arg gpuprobe=0 disables the probe; gpupower=0 stops after
++ * stage 0.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -79,6 +89,8 @@ void sweet_gpu_probe(void);
+ #define GPUCC_CX_HW_CTRL      0x1540u
+ 
+ #define GDSC_POWER_ON         (1u << 31)
++#define GDSC_SW_COLLAPSE      (1u << 0)
++#define GDSC_HW_CONTROL       (1u << 1)
+ #define CBCR_ENABLE           (1u << 0)
+ #define CBCR_OFF              (1u << 31)
+ 
+@@ -237,6 +249,94 @@ gpu_thread(void *arg, wait_result_t result)
+         printf("SWEET GPU: verdict stage0=%s gpucc=%s cx=%s gx=%s (gx off is the bootloader state)\n",
+             bus_dead ? "FAIL" : "OK", bus_dead ? "all-ones" : "responding",
+             cx ? "on" : "off", gx ? "on" : "off");
++        if (bus_dead) {
++                goto out;
++        }
++
++        /* ---- stage 1: the CX half on, then GBIF --------------------------------------- */
++        int power = 1;
++        (void)PE_parse_boot_argn("gpupower", &power, sizeof(power));
++        if (!power) {
++                printf("SWEET GPU: stage1 skipped (gpupower=0)\n");
++                goto out;
++        }
++        if (!cx) {
++                if (cx_gdscr & GDSC_HW_CONTROL) {
++                        printf("SWEET GPU: stage1: the CX switch is under hardware control; not ours to operate\n");
++                        goto out;
++                }
++                printf("SWEET GPU: stage1: clearing CX GDSC collapse (%#x -> %#x)\n",
++                    cx_gdscr, cx_gdscr & ~GDSC_SW_COLLAPSE);
++                gpu_wr(gpucc, GPUCC_CX_GDSCR, cx_gdscr & ~GDSC_SW_COLLAPSE);
++                for (int i = 0; i < 100 && !(gpu_rd(gpucc, GPUCC_CX_HW_CTRL) & GDSC_POWER_ON); i++) {
++                        gpu_wait(1);
++                }
++                cx_gdscr = gpu_rd(gpucc, GPUCC_CX_GDSCR);
++                cx_hw_ctrl = gpu_rd(gpucc, GPUCC_CX_HW_CTRL);
++                printf("SWEET GPU: stage1: cx_gdscr=%#x cx_hw_ctrl=%#x\n", cx_gdscr, cx_hw_ctrl);
++                if (!((cx_gdscr | cx_hw_ctrl) & GDSC_POWER_ON)) {
++                        printf("SWEET GPU: stage1=FAIL CX does not come on; nothing else is touched\n");
++                        goto out;
++                }
++                printf("SWEET GPU: stage1: CX is on\n");
++                uint32_t gx_now = gpu_rd(gpucc, GPUCC_GX_GDSCR);
++                if (gx_now & GDSC_POWER_ON) {
++                        printf("SWEET GPU: stage1: the 3D core has power already (%#x); leaving it alone\n", gx_now);
++                        goto out;
++                }
++        } else {
++                printf("SWEET GPU: stage1: CX was already on\n");
++        }
++
++        /* AHB's halt bit is BRANCH_HALT_DELAY on this SoC (no status to trust):
++         * enable the branches, then read GBIF -- that read is the real proof. */
++        static const struct {
++                const char *name;
++                uint32_t off;
++                bool must;
++        } cx_clocks[] = {
++                { "ahb",     0x1078u, false },
++                { "crc_ahb", 0x107cu, true  },
++                { "cx_apb",  0x1088u, true  },
++                { "cxo",     0x109cu, true  },
++                { "cxo_aon", 0x1004u, true  },
++        };
++        for (unsigned i = 0; i < sizeof(cx_clocks) / sizeof(cx_clocks[0]); i++) {
++                uint32_t v = gpu_rd(gpucc, cx_clocks[i].off);
++                if (!(v & CBCR_ENABLE)) {
++                        gpu_wr(gpucc, cx_clocks[i].off, v | CBCR_ENABLE);
++                }
++                bool running = false;
++                for (int j = 0; j < 10; j++) {
++                        if (!(gpu_rd(gpucc, cx_clocks[i].off) & CBCR_OFF)) {
++                                running = true;
++                                break;
++                        }
++                        gpu_wait(1);
++                }
++                printf("SWEET GPU: stage1: %s=%#x %s\n", cx_clocks[i].name,
++                    gpu_rd(gpucc, cx_clocks[i].off),
++                    running ? "running" : (cx_clocks[i].must ? "STILL OFF" : "off-bit not trustworthy"));
++                if (!running && cx_clocks[i].must) {
++                        printf("SWEET GPU: stage1=FAIL %s does not come on\n", cx_clocks[i].name);
++                        goto out;
++                }
++        }
++
++        uint32_t ahb_after = gpu_rd(gpucc, GPUCC_AHB_CBCR);
++        printf("SWEET GPU: stage1: mapping GBIF 0x%x\n", GPU_GBIF_PA);
++        vm_offset_t gbif = ml_io_map(GPU_GBIF_PA, 0x1000);
++        if (!gbif) {
++                printf("SWEET GPU: stage1=FAIL GBIF mapping failed\n");
++                goto out;
++        }
++        uint32_t scache = gpu_rd(gbif, GBIF_SCACHE_CNTL0);
++        uint32_t halt = gpu_rd(gbif, GBIF_HALT);
++        uint32_t halt_ack = gpu_rd(gbif, GBIF_HALT_ACK);
++        bool gbif_dead = (scache == 0xffffffffu && halt == 0xffffffffu && halt_ack == 0xffffffffu);
++        printf("SWEET GPU: stage1: gbif scache_cntl0=%#x halt=%#x halt_ack=%#x\n", scache, halt, halt_ack);
++        printf("SWEET GPU: stage1=%s cx=on ahb=%#x gbif=%s (GMU clock/firmware is stage 2)\n",
++            gbif_dead ? "FAIL" : "OK", ahb_after, gbif_dead ? "all-ones" : "responding");
+ 
+ out:
+         (void)thread_terminate(current_thread());
