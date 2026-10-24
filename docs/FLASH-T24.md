@@ -91,3 +91,13 @@ fastboot boot raphael-t12-gt9886-clean.img     # 稳定版 r28
 ## 下一轮（stage 1）预告
 
 在探针证明 GPUCC 可访问后：CX/MX RPMh 投票 → GPUCC 分支时钟 → GMU 固件（a640_gmu.bin）+ HFI → SMMU 页表 → 3D 核上电读 RBBM。每一步都会先加只读/回读校验，沿用 t19 的"降级中止"原则：失败就停在锁屏，不重启循环。
+
+## 文件校验
+
+| 文件 | 大小 | SHA256 |
+|---|---|---|
+| `raphael-t24-gpuprobe-clean.img` | 17,342,575 B | `741388fa86f6549707ee5c0d342eece9d86a35e9ec28db9e3549fdfe6db848e2` |
+| `raphael-t24-gpuprobe-debug.img` | 17,342,575 B | `4731e5419d5adec91cfbd5cdcb74bf0b02f4890ef9526cba75751eec51db572e` |
+
+内核：`kernel.development.raphael` 17,223,504 B / `f02fc24898238fa39c42bab8086bda3c558b662c306c1251a8d18e1c3eba1de4`（CI run 40096011088）。
+构建方式：r33 clean 镜像为模板（header/shim/DTB 与 cmdline 逐字节复用，仅替换 SWEETXNU payload）；clean 与 debug 只差 `sweetfb_noconsole` 1 字节（镜像偏移 0x33172）。

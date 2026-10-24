@@ -516,4 +516,6 @@ Stage Summary:
 - 0103 双验证：对重建树 `git apply --check` 通过；应用后 conf/files:114 与 sweet_ufs.c:56/664-665 均为预期内容。
 - 文档：FLASH-T24.md（判读树：stage0=OK/FAIL、cx=on/off、GMU 未启动属正常、卡死处理）+ 本 WORKLOG。
 
+**构建与产物（2026-10-24 21:04）**：主仓库账号无写权限（存储凭据 wzhdgithub 仅 pull）→ fork `wzhdgithub/ios-raphael`，推送 f281adc 并 dispatch xnu（run 40096011088，8 分钟 success）。日志实证：0103 于 12:58:12 正常 apply，`sweet_gpu.c` 于 13:00:43 编译（仅 declaration-after-statement 警告），补丁防跳过门通过。kernel.development.raphael 17,223,504B / `f02fc248…`。镜像以 r33 clean 为模板：shim/DTB 逐字节复用、ADT 复用 r33 内嵌件（`f50510e0…`, 12588B）、cmdline 与 r33 一致（debug 仅 `sweetfb_noconsole=0`）；clean `741388fa…` / debug `4731e541…`，均 17,342,575B，clean/debug 单字节差 @0x33172。
+
 **下一轮（stage 1）**：RPMh CX/MX 投票 → GPUCC 分支时钟 → a640_gmu.bin + HFI → SMMU 页表 → 3D 核上电读 RBBM。沿用 t19 降级中止原则。
