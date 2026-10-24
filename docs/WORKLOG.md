@@ -571,3 +571,8 @@ Stage Summary:
 **范围**：不加载固件、不碰 GX/SMMU；若 cx_gmu 不起则 PARTIAL，不读 GMU（避免无时钟访问楔死 NoC）。
 
 **工程**：0106 对 0105 终态 `git apply --check` 通过（89 增）。
+
+**t27 实机（2026-10-24 23:53 抓取）**：stage 2a 全胜——GCC `gpu_memnoc_gfx=0x221` / `gpu_snoc_dvm_gfx=0x1` / `ddrss_gpu_axi=0x1`；`gmu_rcgr=0x80000000 src=0`（写 `0x1` 清 root-off 后回读仍为 0x80000000，但 `cx_gmu=0x4221 running`，CLK_OFF 已清）；GMU 寄存器全部可读：`sysreset=1 boot_config=0 fw_init=0 hfi_ver=0 rpmh_state=0xf sptprac=0xc0`；自走计数器 21,197,600 Hz（按固定 10ms 推算偏高的原因：线程实际睡 ~11.04ms，折算回 19.2 MHz 晶振；下轮用 mach_absolute_time 精确测量）。整机未卡死。
+
+**固件提取（TWRP，vendor 为 erofs 逻辑分区 dm-1）**：挂载 `/dev/block/mapper/vendor` 到 `/vendor2`（`mount -t erofs`），拉出 `a640_gmu.bin` 37,680B、`a630_sqe.fw` 32,304B、`a640_zap.mdt/.b00/.b01/.b02/.elf`，存 `D:\K20iOSirmware` 并记录 SHA256SUMS。注意 Git Bash 下 adb pull 目标须用 `D:/...` 正斜杠 + MSYS_NO_PATHCONV=1，反斜杠会被吞。
+
