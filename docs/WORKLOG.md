@@ -604,3 +604,15 @@ Stage Summary:
 **依据**：sm8150 `msm-arm-smmu-sm8150.dtsi`（kgsl-smmu@0x02CA0000 0x10000，streams 0/1/2/5）+ arm-smmu.h 布局 + HackiOS step 8/9 的解析方式（IDR1 bit31=64K，[30:28] 页数指数，[7:0] context 数；CB0 偏移 = pages*page）。
 
 **工程**：0108 对 0107 终态 `git apply --check` 通过。
+
+---
+
+## Task 41 (r40/t30) — SMMU 经 hypervisor：改用 SCM IO（2026-10-25）
+
+**输入**：t29 SMMU 探针——IDR 布局正确（`idr0=0x4c017e06 idr1=0x20000005 matches=6 contexts=5 page=0x1000 pages=8`），但 `SMR=0`、`S2CR` 为垃圾值，直接读 GR1 CBAR(0x1000) 卡死 GPU 线程（系统其余继续）。
+
+**根因**：厂商 `arm-smmu.c` 注释——部分 Qualcomm 平台的 SMMU 全局寄存器由 hypervisor 捕获/仿真，寄存器访问需经 **SCM IO**（`SCM_SVC_IO=0x5`，`SCM_IO_READ=1`/`SCM_IO_WRITE=2`，`scm_io_read/write`），静态 context bank 的路径亦如此；直接读仿真不全的 GR1 会挂。
+
+**0109**：新增 `gpu_scm_io_read()`（SCM_FAST|SCM_64|SCM_SIP|SCM_CALL(5,1)，arginfo=1，arg=物理地址）；stage 4 保留直接 IDR/SMR/S2CR 读取，用 SCM IO 交叉验证 IDR0，并逐个读 CBAR 与 CB0 的 SCTLR/TTBR0/TCR/FSR；判决 `stage4=OK/PARTIAL scm_io=working/refused`；不再直接触碰 GR1。
+
+**工程**：0109 对 0108 终态 `git apply --check` 通过（42 增 9 删）。
