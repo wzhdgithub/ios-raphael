@@ -1,0 +1,86 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index e30b712..c2988f6 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -91,6 +91,26 @@ void sweet_gpu_probe(void);
+ #define GPUCC_CX_HW_CTRL      0x1540u
+ 
+ #define GDSC_POWER_ON         (1u << 31)
++
++/* The GPU's SMMU: qsmmu-v500 (an ARM MMU-500) at 0x2ca0000, 0x10000 of registers
++ * (sm8150: msm-arm-smmu-sm8150.dtsi kgsl-smmu@0x02CA0000; offsets arm-smmu.h as
++ * HackiOS uses them: global page(s), SMR at 0x800, S2CR at 0xc00, CBAR/CBA2R in
++ * the page after them, context banks after the global pages). */
++#define GPU_SMMU_PA           0x02ca0000u
++#define GPU_SMMU_SIZE         0x00010000u
++#define SMMU_SCR0             0x0000u
++#define SMMU_IDR0             0x0020u
++#define SMMU_IDR1             0x0024u
++#define SMMU_IDR2             0x0028u
++#define SMMU_IDR7             0x003cu
++#define SMMU_SGFSR            0x0048u
++#define SMMU_SMR(n)           (0x0800u + 4u * (n))
++#define SMMU_S2CR(n)          (0x0c00u + 4u * (n))
++#define SMMU_CBAR(n)          (4u * (n))
++#define SMMU_CB_SCTLR         0x0000u
++#define SMMU_CB_TTBR0         0x0020u
++#define SMMU_CB_TCR           0x0030u
++#define SMMU_CB_FSR           0x0058u
+ #define GDSC_SW_COLLAPSE      (1u << 0)
+ #define GDSC_HW_CONTROL       (1u << 1)
+ #define CBCR_ENABLE           (1u << 0)
+@@ -506,6 +526,54 @@ gpu_thread(void *arg, wait_result_t result)
+                     (unsigned long long)answer);
+         }
+ 
++        /* ---- stage 4 probe: the GPU's SMMU, read-only -------------------------------- */
++        int smmu = 1;
++        (void)PE_parse_boot_argn("gpusmmu", &smmu, sizeof(smmu));
++        if (!smmu) {
++                printf("SWEET GPU: stage4 smmu probe skipped (gpusmmu=0)\n");
++                goto out;
++        }
++        printf("SWEET GPU: stage4: mapping SMMU 0x%x (%#x)\n", GPU_SMMU_PA, GPU_SMMU_SIZE);
++        vm_offset_t sm = ml_io_map(GPU_SMMU_PA, GPU_SMMU_SIZE);
++        if (!sm) {
++                printf("SWEET GPU: stage4=FAIL SMMU mapping failed\n");
++                goto out;
++        }
++        uint32_t idr0 = gpu_rd(sm, SMMU_IDR0);
++        uint32_t idr1 = gpu_rd(sm, SMMU_IDR1);
++        uint32_t idr2 = gpu_rd(sm, SMMU_IDR2);
++        uint32_t idr7 = gpu_rd(sm, SMMU_IDR7);
++        uint32_t scr0 = gpu_rd(sm, SMMU_SCR0);
++        uint32_t sgfsr = gpu_rd(sm, SMMU_SGFSR);
++        uint32_t sm_page = (idr1 & (1u << 31)) ? 0x10000u : 0x1000u;
++        uint32_t sm_pages = 2u << ((idr1 >> 28) & 7u);
++        uint32_t sm_contexts = idr1 & 0xffu;
++        uint32_t sm_matches = idr0 & 0xffu;
++        printf("SWEET GPU: stage4: smmu idr0=%#x idr1=%#x idr2=%#x idr7=%#x scr0=%#x sgfsr=%#x\n",
++            idr0, idr1, idr2, idr7, scr0, sgfsr);
++        printf("SWEET GPU: stage4: smmu matches=%u contexts=%u page=%#x pages=%u regspace=%#x\n",
++            sm_matches, sm_contexts, sm_page, sm_pages, 2u * sm_pages * sm_page);
++        if (2u * sm_pages * sm_page != GPU_SMMU_SIZE) {
++                printf("SWEET GPU: stage4=FAIL SMMU register space %#x does not match the DTS %#x\n",
++                    2u * sm_pages * sm_page, GPU_SMMU_SIZE);
++                goto out;
++        }
++        for (uint32_t i = 0; i < sm_matches && i < 16; i++) {
++                printf("SWEET GPU: stage4: smmu smr[%u]=%#x s2cr[%u]=%#x\n", i,
++                    gpu_rd(sm, SMMU_SMR(i)), i, gpu_rd(sm, SMMU_S2CR(i)));
++        }
++        for (uint32_t i = 0; i < sm_contexts && i < 16; i++) {
++                printf("SWEET GPU: stage4: smmu cbar[%u]=%#x\n", i,
++                    gpu_rd(sm, sm_page + SMMU_CBAR(i)));
++        }
++        uint32_t cb0 = sm_pages * sm_page;
++        printf("SWEET GPU: stage4: smmu cb0 sctlr=%#x ttbr0=%#x%08x tcr=%#x fsr=%#x\n",
++            gpu_rd(sm, cb0 + SMMU_CB_SCTLR),
++            gpu_rd(sm, cb0 + SMMU_CB_TTBR0 + 4), gpu_rd(sm, cb0 + SMMU_CB_TTBR0),
++            gpu_rd(sm, cb0 + SMMU_CB_TCR), gpu_rd(sm, cb0 + SMMU_CB_FSR));
++        printf("SWEET GPU: stage4=OK smmu=responding matches=%u contexts=%u\n",
++            sm_matches, sm_contexts);
++
+ out:
+         (void)thread_terminate(current_thread());
+         thread_block(THREAD_CONTINUE_NULL);

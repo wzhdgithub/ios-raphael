@@ -592,3 +592,15 @@ Stage Summary:
 **依据**：HackiOS `redwood_adreno.c` 的 scm()/step_trustzone()（同一 smc 约定与调用号）；zap 镜像已从 raphael vendor 提取（a640_zap.mdt/.b00/.b01/.b02/.elf）。
 
 **工程**：0107 对 0106 终态 `git apply --check` 通过。
+
+---
+
+## Task 40 (r39/t29) — GPU stage 4 前置：SMMU 只读探针（2026-10-25）
+
+**输入**：t28 实机——`counter=19200001 Hz`（精确 19.2 MHz）、`tz=available`、PAS init/auth 调用可用、GPU zap supported=0（语义未知，无驱动依赖）；GMU 固件解析出 TCM 14,892B + DDR 22,676B，DDR 段必须经 SMMU stream 5。
+
+**0108（sweet_gpu.c +68 行，只读）**：映射 kgsl-smmu 0x2ca0000/0x10000；读 IDR0/1/2/7、SCR0、SGFSR；由 IDR1 推导 page(4K/64K)/pages/contexts/matches 并与 DTS 大小对账；读 SMR/S2CR（≤16）、CBAR（第二页）、CB0 的 SCTLR/TTBR0/TCR/FSR；`stage4=OK/FAIL`；`gpusmmu=0` 跳过。
+
+**依据**：sm8150 `msm-arm-smmu-sm8150.dtsi`（kgsl-smmu@0x02CA0000 0x10000，streams 0/1/2/5）+ arm-smmu.h 布局 + HackiOS step 8/9 的解析方式（IDR1 bit31=64K，[30:28] 页数指数，[7:0] context 数；CB0 偏移 = pages*page）。
+
+**工程**：0108 对 0107 终态 `git apply --check` 通过。
