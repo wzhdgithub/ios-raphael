@@ -1,0 +1,135 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 40b9358..e30b712 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -50,6 +50,7 @@
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <kern/clock.h>
++#include <mach/mach_time.h>
+ #include <kern/thread.h>
+ #include <kern/sched_prim.h>
+ #include <machine/machine_routines.h>
+@@ -136,6 +137,64 @@ gpu_wait(unsigned ms)
+         thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
++/* Qualcomm SCM via SMC: qcom_scm-smc.c convention, as HackiOS uses it. */
++#define SCM_FAST                (1ull << 31)
++#define SCM_64                  (1ull << 30)
++#define SCM_SIP                 (2ull << 24)
++#define SCM_CALL(service, command) ((uint64_t)(service) << 8 | (command))
++#define SCM_IS_CALL_AVAILABLE   SCM_CALL(6, 1)
++#define SCM_PAS_INIT_IMAGE      SCM_CALL(2, 1)
++#define SCM_PAS_AUTH_AND_RESET  SCM_CALL(2, 5)
++#define SCM_PAS_IS_SUPPORTED    SCM_CALL(2, 7)
++#define SCM_ONE_VALUE           1
++#define SCM_INTERRUPTED         1
++#define PAS_GPU                 13
++
++static int32_t
++gpu_scm(const char *what, uint64_t function, uint64_t arguments, uint64_t first,
++    uint64_t second, uint64_t third, uint64_t *answer)
++{
++        uint64_t session = 0;
++
++        printf("SWEET GPU: tz: asking %s (smc %#llx, %#llx %#llx %#llx)\n", what, function,
++            first, second, third);
++        for (int i = 0; i < 100; i++) {
++                register uint64_t x0 __asm__("x0") = i == 0 ? function : SCM_INTERRUPTED;
++                register uint64_t x1 __asm__("x1") = arguments;
++                register uint64_t x2 __asm__("x2") = first;
++                register uint64_t x3 __asm__("x3") = second;
++                register uint64_t x4 __asm__("x4") = third;
++                register uint64_t x5 __asm__("x5") = 0;
++                register uint64_t x6 __asm__("x6") = session;
++                register uint64_t x7 __asm__("x7") = 0;
++
++                __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3),
++                    "+r" (x4), "+r" (x5), "+r" (x6), "+r" (x7) : :
++                    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
++                session = x6;
++                if (x0 != SCM_INTERRUPTED) {
++                        printf("SWEET GPU: tz: returns %d, answer %#llx\n", (int32_t)x0,
++                            (unsigned long long)x1);
++                        *answer = x1;
++                        return (int32_t)x0;
++                }
++        }
++        printf("SWEET GPU: tz: keeps saying the call was interrupted\n");
++        return -1;
++}
++
++static uint32_t
++gpu_counter_hz(vm_offset_t gmu)
++{
++        uint64_t start, nanos = 0;
++        uint32_t before = gpu_rd(gmu, GMU_AO_COUNTER_L);
++        start = mach_absolute_time();
++        gpu_wait(10);
++        uint32_t after = gpu_rd(gmu, GMU_AO_COUNTER_L);
++        absolutetime_to_nanoseconds(mach_absolute_time() - start, &nanos);
++        return nanos ? (uint32_t)(((uint64_t)(after - before) * NSEC_PER_SEC) / nanos) : 0;
++}
++
+ static void
+ gpu_thread(void *arg, wait_result_t result)
+ {
+@@ -229,10 +288,7 @@ gpu_thread(void *arg, wait_result_t result)
+         if (cx && gmu_running) {
+                 vm_offset_t gmu = ml_io_map(GPU_GMU_PA, GPU_GMU_SIZE);
+                 if (gmu) {
+-                        uint32_t c0 = gpu_rd(gmu, GMU_AO_COUNTER_L);
+-                        gpu_wait(10);
+-                        uint32_t c1 = gpu_rd(gmu, GMU_AO_COUNTER_L);
+-                        uint32_t hz = (uint32_t)((c1 - c0) * 100u);
++                        uint32_t hz = gpu_counter_hz(gmu);
+                         printf("SWEET GPU: gmu sysreset=%#x boot_config=%#x fw_init=%#x hfi_ctrl=%#x hfi_ver=%#x\n",
+                             gpu_rd(gmu, GMU_CM3_SYSRESET), gpu_rd(gmu, GMU_CM3_BOOT_CONFIG),
+                             gpu_rd(gmu, GMU_CM3_FW_INIT_RESULT), gpu_rd(gmu, GMU_HFI_CTRL_STATUS),
+@@ -409,10 +465,7 @@ gpu_thread(void *arg, wait_result_t result)
+                 uint32_t hfi = gpu_rd(gmu, GMU_HFI_VERSION_INFO);
+                 uint32_t rpmh = gpu_rd(gmu, GMU_RPMH_POWER_STATE);
+                 uint32_t sptprac = gpu_rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS);
+-                uint32_t c0 = gpu_rd(gmu, GMU_AO_COUNTER_L);
+-                gpu_wait(10);
+-                uint32_t c1 = gpu_rd(gmu, GMU_AO_COUNTER_L);
+-                uint32_t hz = (uint32_t)((c1 - c0) * 100u);
++                uint32_t hz = gpu_counter_hz(gmu);
+                 bool dead = (sysreset == 0xffffffffu && bootcfg == 0xffffffffu &&
+                     hfi == 0xffffffffu && rpmh == 0xffffffffu);
+                 printf("SWEET GPU: stage2: gmu sysreset=%#x boot_config=%#x fw_init=%#x hfi_ver=%#x\n",
+@@ -426,6 +479,33 @@ gpu_thread(void *arg, wait_result_t result)
+                 printf("SWEET GPU: stage2=PARTIAL gmu clock does not start; GMU left untouched\n");
+         }
+ 
++        /* ---- stage 3 probe: is TrustZone reachable (read-only SCM questions) --------- */
++        int tz = 1;
++        (void)PE_parse_boot_argn("gputz", &tz, sizeof(tz));
++        if (!tz) {
++                printf("SWEET GPU: stage3 tz probe skipped (gputz=0)\n");
++                goto out;
++        }
++        uint64_t answer = 0;
++        uint64_t how = SCM_FAST | SCM_64 | SCM_SIP;
++        int32_t scm_status = gpu_scm("whether it can be asked", how | SCM_IS_CALL_AVAILABLE,
++            SCM_ONE_VALUE, SCM_SIP | SCM_IS_CALL_AVAILABLE, 0, 0, &answer);
++        if (scm_status == 0 && answer == 1) {
++                printf("SWEET GPU: tz=available\n");
++                gpu_scm("for the image signature call", how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE,
++                    SCM_SIP | SCM_PAS_INIT_IMAGE, 0, 0, &answer);
++                gpu_scm("for the authenticate+start call", how | SCM_IS_CALL_AVAILABLE, SCM_ONE_VALUE,
++                    SCM_SIP | SCM_PAS_AUTH_AND_RESET, 0, 0, &answer);
++                uint64_t supported = 0;
++                int32_t sup = gpu_scm("whether the GPU zap image is supported", how | SCM_PAS_IS_SUPPORTED,
++                    SCM_ONE_VALUE, PAS_GPU, 0, 0, &supported);
++                printf("SWEET GPU: tz: gpu zap status=%d supported=%llu\n", sup,
++                    (unsigned long long)supported);
++        } else {
++                printf("SWEET GPU: tz=unavailable status=%d answer=%#llx\n", scm_status,
++                    (unsigned long long)answer);
++        }
++
+ out:
+         (void)thread_terminate(current_thread());
+         thread_block(THREAD_CONTINUE_NULL);

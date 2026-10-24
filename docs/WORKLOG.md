@@ -576,3 +576,19 @@ Stage Summary:
 
 **固件提取（TWRP，vendor 为 erofs 逻辑分区 dm-1）**：挂载 `/dev/block/mapper/vendor` 到 `/vendor2`（`mount -t erofs`），拉出 `a640_gmu.bin` 37,680B、`a630_sqe.fw` 32,304B、`a640_zap.mdt/.b00/.b01/.b02/.elf`，存 `D:\K20iOSirmware` 并记录 SHA256SUMS。注意 Git Bash 下 adb pull 目标须用 `D:/...` 正斜杠 + MSYS_NO_PATHCONV=1，反斜杠会被吞。
 
+
+---
+
+## Task 39 (r38/t28) — GPU stage 3 前置：精确计数器 + TZ/SCM 只读探测（2026-10-25）
+
+**输入**：t27 实机 `stage2=OK gmu=responding counter=21197600 Hz`（固定 10ms 窗口的调度误差约 10.4%，折算 19.2 MHz）。
+
+**0107（sweet_gpu.c +88/-8）**：
+- `gpu_counter_hz()`：`mach_absolute_time()` 前后夹住 10 ms 等待，`absolutetime_to_nanoseconds()` 换算真实 Hz（stage 0 与 stage 2 两处都改）；
+- `gpu_scm()`：qcom_scm-smc 约定（x0=fnid[SCM_FAST|SCM_64|SCM_SIP|call]，x1=参数描述符，x2..x4 参数，x6=session，`smc #0`，被打断用 x0=1 重试）；
+- 只读探测：SCM_IS_CALL_AVAILABLE 自身 → PAS_INIT_IMAGE / PAS_AUTH_AND_RESET 可用性 → PAS_IS_SUPPORTED(PAS_GPU=13)；`gputz=0` 跳过；
+- 判决行 `tz=available/unavailable` + `gpu zap status/supported`。
+
+**依据**：HackiOS `redwood_adreno.c` 的 scm()/step_trustzone()（同一 smc 约定与调用号）；zap 镜像已从 raphael vendor 提取（a640_zap.mdt/.b00/.b01/.b02/.elf）。
+
+**工程**：0107 对 0106 终态 `git apply --check` 通过。
