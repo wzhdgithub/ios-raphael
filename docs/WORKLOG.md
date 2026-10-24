@@ -493,3 +493,27 @@ Stage Summary:
 **工程**：sweet_touch.c 终态重建 = 0060(创建)→0062→0063→0083→0086→0088→0089→0091→0093→0094 十补丁链回放（1162 行零 FAIL，6 锚点全中；幻影段尾空行/\ No newline 元数据解析修复）；0102 双向验证（git apply --check --reverse + patch -p1 应用结果与手改版逐字节一致）；t23 构建自检（t22 字节级复现）。
 
 **下一轮判决点**：①`GT9886 tryN` 任一档 PID 变对 + 实机触摸恢复（全胜）；②三败（固件升级路径：OrangeFox 从 MIUI vendor 提取 goodix 固件）；③亮度/充电回归确认（本轮零改动）。
+
+---
+
+## Task 35 (r34/t24) — GPU 探针 stage 0：XNU 能否碰到 SM8150 GPU（2026-10-24）
+
+**输入**：用户要求"让 GPU 跑起来"的可行性验证。调研对象 = HackiOS（OOSexGang，2026-10-22 开源）：
+- 内核侧 `redwood_adreno.c`（4125 行，GPUCC/GDSC/RPMh/GMU 固件/HFI/SMMU-500/TZ zap）+ `RedwoodGPU.cpp`（1295 行，把 Linux msm DRM ioctl 界面搬进 XNU）；
+- 用户态 Mesa 25.0.7 + freedreno（`redwood-drm` 假 libdrm）、`eagl.c`（4205 行，CA 走 GLES 上 GPU）；
+- Metal：`redwoodmetal.m`（6333 行，`MTLAddDevice` 注册）+ Mesa AIR 前端 `air_metal.c`（6992 行，AIR→NIR/IR3），公开数据 456 个系统模块 321 个到 ir3（271 fragment + 47 compute 全过，135 visible 未过）。
+- 结论：他们不是"让 Metal 跑在 Adreno 上"的魔法，而是三层自建；raphael 的 Adreno 640 在 freedreno 支持范围内，但内核驱动是 SM7325 专用，需按 SM8150 重写。
+
+**本轮范围（刻意保守）**：只回答第一个问题——GPUCC 寄存器块能不能被 XNU 读到。3D 核（GX）一次不碰；GMU 只在时钟已在跑时读身份寄存器；唯一写操作是 GCC `gpu_cfg_ahb`（0x71004）的 enable 位（HackiOS step 3 同款，GPUCC 寄存器文件的时钟）。
+
+**0103（bsd/dev/sweet_gpu.c，273 行 + conf/files/sweet_ufs.c 接线）**：
+- 地址：3D 0x2c00000 / GBIF 0x2c0f000 / GMU 0x2c6a000 / GPUCC 0x2c90000；CX GDSC +0x106c、GX GDSC +0x100c、GX reset +0x1008、CX hw-ctrl +0x1540（sm8150.dtsi / sm8150-gpu.dtsi / sm8150-gdsc.dtsi）；GPUCC 分支偏移取 vendor gpucc-sm8150.c；GDSCR bit31=power、CBCR bit0=enable/bit31=CLK_OFF（gdsc.c / clk-branch.h）。
+- 流程：30s 延迟线程（`gpuprobedelay`）→ GCC gpu_cfg_ahb 检查/使能 → GPUCC 16 个寄存器只读 → CX/AHB 成立才读 GBIF → cx_gmu 也在跑才读 GMU 身份 + 19.2MHz 自走计数器 → verdict。`gpuprobe=0` 关闭。
+- 风险与取证：首读 GPUCC 前先打印 `mapping GPUCC ...`；若 CX 域无电把 NoC 楔死，日志最后一行即死点；卡死可强制重启（fastboot boot 不落盘）。
+
+**工程**：
+- 重建 CI 同源树：release.json macos-135 → xnu **8796.141.3**（不是 121.2）；`git apply` 在 Windows 克隆下会因 core.autocrlf=true 把补丁变 CRLF 并拒绝上下文——改用 LF 副本后，0028→0077 九个补丁回放出 sweet_ufs.c（823 行）与 conf/files（650 行），调用点 `sweet_ufs_probe` 链完整。
+- 0103 双验证：对重建树 `git apply --check` 通过；应用后 conf/files:114 与 sweet_ufs.c:56/664-665 均为预期内容。
+- 文档：FLASH-T24.md（判读树：stage0=OK/FAIL、cx=on/off、GMU 未启动属正常、卡死处理）+ 本 WORKLOG。
+
+**下一轮（stage 1）**：RPMh CX/MX 投票 → GPUCC 分支时钟 → a640_gmu.bin + HFI → SMMU 页表 → 3D 核上电读 RBBM。沿用 t19 降级中止原则。
