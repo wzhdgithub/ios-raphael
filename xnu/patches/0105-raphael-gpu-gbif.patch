@@ -1,0 +1,56 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 17cca0c..09c99a9 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -35,7 +35,8 @@
+  * collapse bit of GPUCC_CX_GDSCR (0x106c) and wait for bit 31 of the
+  * hw-ctrl register (0x1540); refuse if the switch is under hardware control
+  * or if the 3D core is somehow already powered. Then enable the CX-half
+- * branches (ahb/crc_ahb/cx_apb/cxo/cxo_aon) and read GBIF (0x2c0f000): its
++ * branches (cxo/cxo_aon/ahb/crc_ahb/cx_apb; the last two are hardware-gated
++ * on SM8150 and not fatal) and read GBIF (0x2c0f000): its
+  * registers are the first evidence that the GPU's CX half is really alive.
+  * The GMU's clock source, its firmware and the GX core are stage 2.
+  *
+@@ -288,18 +289,20 @@ gpu_thread(void *arg, wait_result_t result)
+                 printf("SWEET GPU: stage1: CX was already on\n");
+         }
+ 
+-        /* AHB's halt bit is BRANCH_HALT_DELAY on this SoC (no status to trust):
+-         * enable the branches, then read GBIF -- that read is the real proof. */
++        /* CXO first (the crystal branch the rest hang off), then the register
++         * bus. None of these is fatal on its own: t25 proved that on SM8150
++         * crc_ahb reads 0 and cx_apb refuses the enable bit even with the CX
++         * domain up (hardware-gated branches), while AHB's halt bit is
++         * BRANCH_HALT_DELAY. The GBIF read below is the proof that matters. */
+         static const struct {
+                 const char *name;
+                 uint32_t off;
+-                bool must;
+         } cx_clocks[] = {
+-                { "ahb",     0x1078u, false },
+-                { "crc_ahb", 0x107cu, true  },
+-                { "cx_apb",  0x1088u, true  },
+-                { "cxo",     0x109cu, true  },
+-                { "cxo_aon", 0x1004u, true  },
++                { "cxo_aon", 0x1004u },
++                { "cxo",     0x109cu },
++                { "ahb",     0x1078u },
++                { "crc_ahb", 0x107cu },
++                { "cx_apb",  0x1088u },
+         };
+         for (unsigned i = 0; i < sizeof(cx_clocks) / sizeof(cx_clocks[0]); i++) {
+                 uint32_t v = gpu_rd(gpucc, cx_clocks[i].off);
+@@ -316,11 +319,7 @@ gpu_thread(void *arg, wait_result_t result)
+                 }
+                 printf("SWEET GPU: stage1: %s=%#x %s\n", cx_clocks[i].name,
+                     gpu_rd(gpucc, cx_clocks[i].off),
+-                    running ? "running" : (cx_clocks[i].must ? "STILL OFF" : "off-bit not trustworthy"));
+-                if (!running && cx_clocks[i].must) {
+-                        printf("SWEET GPU: stage1=FAIL %s does not come on\n", cx_clocks[i].name);
+-                        goto out;
+-                }
++                    running ? "running" : "not-running (hw-gated or no status bit)");
+         }
+ 
+         uint32_t ahb_after = gpu_rd(gpucc, GPUCC_AHB_CBCR);

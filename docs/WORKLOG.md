@@ -543,3 +543,15 @@ Stage Summary:
 **工程**：补丁对 0103 终态 `git apply --check` 通过（373 行结果、14 处 stage1）；构建走 fork wzhdgithub + dispatch xnu，沿用 r33 模板打包（shim/DTB/ADT/cmdline 复用，仅 payload 变化）。
 
 **下一轮判决点**：①`stage1: CX is on`；②`gbif=responding`（stage 1a 全胜）；③失效分支按 FLASH-T25 表回报。
+
+---
+
+## Task 37 (r36/t26) — GPU stage 1b：放宽 Cx 时钟判据 + GBIF 证据（2026-10-24）
+
+**输入**：t25 实机——CX GDSC 上电成功（`0x222001 -> 0xf8222000`，hw_ctrl bit31=1），AHB 0x1 running；但 `crc_ahb=0`、`cx_apb=0x80000000` 被 `must=true` 误判为失败并中止，GBIF 未读。整机未卡死（SpringBoard 正常，SMP 行是 process sampler 采样）。
+
+**0105**：时钟顺序改 `cxo_aon→cxo→ahb→crc_ahb→cx_apb`；crc_ahb/cx_apb 降级为非致命（SM8150 硬件门控，enable 不可写）；时钟段后无条件读 GBIF，`stage1=OK` 由 GBIF 是否 all-ones 决定。
+
+**范围**：仍不碰 GMU 时钟源/固件/GX/SMMU——本轮只补齐“CX 半区活着”的证据。
+
+**工程**：0105 对 0104 终态 `git apply --check` 通过（13 增 14 删）。
