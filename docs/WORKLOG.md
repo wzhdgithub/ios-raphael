@@ -555,3 +555,19 @@ Stage Summary:
 **范围**：仍不碰 GMU 时钟源/固件/GX/SMMU——本轮只补齐“CX 半区活着”的证据。
 
 **工程**：0105 对 0104 终态 `git apply --check` 通过（13 增 14 删）。
+
+---
+
+## Task 38 (r37/t27) — GPU stage 2a：GCC GPU 时钟 + GMU 时钟根 + GMU 身份（2026-10-24）
+
+**输入**：t26 实机 `stage1=OK cx=on ahb=0x1 gbif=responding`（scache=0 halt=0 halt_ack=0x3），CX 半区已活。
+
+**0106（sweet_gpu.c +89 行）**：
+- GCC 三时钟：`gpu_memnoc_gfx`(0x7100c, BRANCH_VOTED)、`gpu_snoc_dvm_gfx`(0x71018, BRANCH_HALT)、`ddrss_gpu_axi`(0x71154, BRANCH_VOTED)，只置 enable 并回读；
+- GPUCC `gmu_clk_src`(0x1120)：实测 `0x80000000`（CMD_ROOT_OFF=bit31，源=bi_tcxo）；写 `(v & ~BIT31) | RCG_UPDATE` 打开根，保留 19.2 MHz 源（够寄存器访问；200 MHz GPLL0 留作优化）；
+- `cx_gmu`(0x1098) 分支使能并轮询 CLK_OFF 20 ms；
+- 仅当分支 running 才映射 GMU（0x2c6a000）读 CM3/HFI/RPMH/SPTPRAC 与自走计数器；`stage2=OK/FAIL/PARTIAL` 判决；`gpugmu=0` 可跳过。
+
+**范围**：不加载固件、不碰 GX/SMMU；若 cx_gmu 不起则 PARTIAL，不读 GMU（避免无时钟访问楔死 NoC）。
+
+**工程**：0106 对 0105 终态 `git apply --check` 通过（89 增）。

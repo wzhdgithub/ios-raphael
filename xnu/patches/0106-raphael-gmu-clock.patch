@@ -1,0 +1,100 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 09c99a9..40b9358 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -336,6 +336,95 @@ gpu_thread(void *arg, wait_result_t result)
+         printf("SWEET GPU: stage1: gbif scache_cntl0=%#x halt=%#x halt_ack=%#x\n", scache, halt, halt_ack);
+         printf("SWEET GPU: stage1=%s cx=on ahb=%#x gbif=%s (GMU clock/firmware is stage 2)\n",
+             gbif_dead ? "FAIL" : "OK", ahb_after, gbif_dead ? "all-ones" : "responding");
++        if (gbif_dead) {
++                goto out;
++        }
++
++        /* ---- stage 2: GCC GPU clocks, the GMU clock root, GMU identity ---------------- */
++        int gmu_stage = 1;
++        (void)PE_parse_boot_argn("gpugmu", &gmu_stage, sizeof(gmu_stage));
++        if (!gmu_stage) {
++                printf("SWEET GPU: stage2 skipped (gpugmu=0)\n");
++                goto out;
++        }
++
++        printf("SWEET GPU: stage2: GCC GPU clocks\n");
++        static const struct {
++                const char *name;
++                uint32_t off;
++        } gcc_clocks[] = {
++                { "gpu_memnoc_gfx",   0x7100cu },
++                { "gpu_snoc_dvm_gfx", 0x71018u },
++                { "ddrss_gpu_axi",    0x71154u },
++        };
++        for (unsigned i = 0; i < sizeof(gcc_clocks) / sizeof(gcc_clocks[0]); i++) {
++                uint32_t v = gpu_rd(gcc, gcc_clocks[i].off);
++                if (!(v & CBCR_ENABLE)) {
++                        gpu_wr(gcc, gcc_clocks[i].off, v | CBCR_ENABLE);
++                }
++                gpu_wait(1);
++                printf("SWEET GPU: stage2: %s=%#x\n", gcc_clocks[i].name,
++                    gpu_rd(gcc, gcc_clocks[i].off));
++        }
++
++        /* The GMU's clock source is still rooted off (CMD_ROOT_OFF, bit 31). It
++         * selects bi_tcxo (19.2 MHz) today, which is enough to give the GMU a
++         * register clock; 200 MHz from GPLL0 is a later optimisation. */
++        uint32_t rcgr = gpu_rd(gpucc, GPUCC_GMU_RCGR);
++        printf("SWEET GPU: stage2: gmu_rcgr=%#x src=%#x\n", rcgr,
++            gpu_rd(gpucc, GPUCC_GMU_RCGR + 4));
++        if (rcgr & (1u << 31)) {
++                uint32_t on = (rcgr & ~(1u << 31)) | 1u;
++                printf("SWEET GPU: stage2: clearing CMD_ROOT_OFF (%#x -> %#x)\n", rcgr, on);
++                gpu_wr(gpucc, GPUCC_GMU_RCGR, on);
++                gpu_wait(1);
++                printf("SWEET GPU: stage2: gmu_rcgr=%#x src=%#x\n",
++                    gpu_rd(gpucc, GPUCC_GMU_RCGR), gpu_rd(gpucc, GPUCC_GMU_RCGR + 4));
++        }
++
++        uint32_t cg = gpu_rd(gpucc, GPUCC_CX_GMU_CBCR);
++        if (!(cg & CBCR_ENABLE)) {
++                gpu_wr(gpucc, GPUCC_CX_GMU_CBCR, cg | CBCR_ENABLE);
++        }
++        bool gmu_on = false;
++        for (int j = 0; j < 20; j++) {
++                if (!(gpu_rd(gpucc, GPUCC_CX_GMU_CBCR) & CBCR_OFF)) {
++                        gmu_on = true;
++                        break;
++                }
++                gpu_wait(1);
++        }
++        printf("SWEET GPU: stage2: cx_gmu=%#x %s\n", gpu_rd(gpucc, GPUCC_CX_GMU_CBCR),
++            gmu_on ? "running" : "off");
++
++        if (gmu_on) {
++                vm_offset_t gmu = ml_io_map(GPU_GMU_PA, GPU_GMU_SIZE);
++                if (!gmu) {
++                        printf("SWEET GPU: stage2=FAIL GMU mapping failed\n");
++                        goto out;
++                }
++                uint32_t sysreset = gpu_rd(gmu, GMU_CM3_SYSRESET);
++                uint32_t bootcfg = gpu_rd(gmu, GMU_CM3_BOOT_CONFIG);
++                uint32_t fwinit = gpu_rd(gmu, GMU_CM3_FW_INIT_RESULT);
++                uint32_t hfi = gpu_rd(gmu, GMU_HFI_VERSION_INFO);
++                uint32_t rpmh = gpu_rd(gmu, GMU_RPMH_POWER_STATE);
++                uint32_t sptprac = gpu_rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS);
++                uint32_t c0 = gpu_rd(gmu, GMU_AO_COUNTER_L);
++                gpu_wait(10);
++                uint32_t c1 = gpu_rd(gmu, GMU_AO_COUNTER_L);
++                uint32_t hz = (uint32_t)((c1 - c0) * 100u);
++                bool dead = (sysreset == 0xffffffffu && bootcfg == 0xffffffffu &&
++                    hfi == 0xffffffffu && rpmh == 0xffffffffu);
++                printf("SWEET GPU: stage2: gmu sysreset=%#x boot_config=%#x fw_init=%#x hfi_ver=%#x\n",
++                    sysreset, bootcfg, fwinit, hfi);
++                printf("SWEET GPU: stage2: gmu rpmh_state=%#x sptprac=%#x counter=%u Hz\n",
++                    rpmh, sptprac, hz);
++                printf("SWEET GPU: stage2=%s gmu=%s counter=%s (firmware is stage 3)\n",
++                    dead ? "FAIL" : "OK", dead ? "all-ones" : "responding",
++                    (hz > 18000000u && hz < 20500000u) ? "19.2MHz crystal" : "measured above");
++        } else {
++                printf("SWEET GPU: stage2=PARTIAL gmu clock does not start; GMU left untouched\n");
++        }
+ 
+ out:
+         (void)thread_terminate(current_thread());
