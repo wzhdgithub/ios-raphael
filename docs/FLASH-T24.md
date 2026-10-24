@@ -101,3 +101,19 @@ fastboot boot raphael-t12-gt9886-clean.img     # 稳定版 r28
 
 内核：`kernel.development.raphael` 17,223,504 B / `f02fc24898238fa39c42bab8086bda3c558b662c306c1251a8d18e1c3eba1de4`（CI run 40096011088）。
 构建方式：r33 clean 镜像为模板（header/shim/DTB 与 cmdline 逐字节复用，仅替换 SWEETXNU payload）；clean 与 debug 只差 `sweetfb_noconsole` 1 字节（镜像偏移 0x33172）。
+
+## t24 实机结果（2026-10-24）
+
+探针 12 行全部出现，整机正常进锁屏，无卡死、无回归：
+
+```
+SWEET GPU: gcc gpu_cfg_ahb=0x1 (running)
+SWEET GPU: pll0=0 pll1=0 cxo_aon=0 gx_sw_reset=0
+SWEET GPU: gx_gdscr=0x222001 cx_gdscr=0x222001 gx_gmu=0x80000000 ahb=0x80000001 crc_ahb=0
+SWEET GPU: cx_snoc=0x80000000 cx_gmu=0x80004220 cxo=0x80000001 gmu_rcgr=0x80000000 src=0
+SWEET GPU: cx_hw_ctrl=0x5ff4 gx_domain_addr=0x3c0001
+SWEET GPU: state cx=off gx=off ahb=enabled-but-off cx_gmu=disabled
+SWEET GPU: verdict stage0=OK gpucc=responding cx=off gx=off
+```
+
+判读：GPUCC 寄存器块可以从 XNU 访问（非 all-ones），GCC 时钟使能写入生效；GPU 的 CX/GX 两个本地电源开关都处于 collapsed（bit31=0），所有 GPU 时钟关闭、GMU 未启动——这正是 bootloader 留下的状态。**CX GDSC 关着时读 GPUCC 不会楔死总线**，因此 stage 1 可以安全地做上电时序。

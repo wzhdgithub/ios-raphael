@@ -518,4 +518,10 @@ Stage Summary:
 
 **构建与产物（2026-10-24 21:04）**：主仓库账号无写权限（存储凭据 wzhdgithub 仅 pull）→ fork `wzhdgithub/ios-raphael`，推送 f281adc 并 dispatch xnu（run 40096011088，8 分钟 success）。日志实证：0103 于 12:58:12 正常 apply，`sweet_gpu.c` 于 13:00:43 编译（仅 declaration-after-statement 警告），补丁防跳过门通过。kernel.development.raphael 17,223,504B / `f02fc248…`。镜像以 r33 clean 为模板：shim/DTB 逐字节复用、ADT 复用 r33 内嵌件（`f50510e0…`, 12588B）、cmdline 与 r33 一致（debug 仅 `sweetfb_noconsole=0`）；clean `741388fa…` / debug `4731e541…`，均 17,342,575B，clean/debug 单字节差 @0x33172。
 
+**t24 实机（2026-10-24 22:30 抓取，开机 30s 探针）**：12 行 `SWEET GPU:` 全在场，整机无回归（8/8 CPU、`DSI ctrl0 probe ok`、`sel 50 (10000)`、`registering as AppleSmartBattery`、GT9886 选中、按键正常）。
+- 唯一写生效：`gcc gpu_cfg_ahb=0x1 (running)`（写前为 0；GPUCC 寄存器时钟成功打开）。
+- GPUCC 应答且非 all-ones：`gx_gdscr=0x222001 cx_gdscr=0x222001`（bit31=0，两个 GDSC 都 collapsed）、`cx_hw_ctrl=0x5ff4`（bit31=0）、`ahb=0x80000001`（enabled-but-off）、`cx_gmu=0x80004220`、`cxo=0x80000001`、`gmu_rcgr=0x80000000 src=0`、`cx_snoc=0x80000000`、`gx_gmu=0x80000000`；PLL0/PLL1/CXO_AON/GX_RESET 全 0（无电）。
+- 按规则跳过 GBIF（ahb off）与 GMU（cx_gmu off），verdict `stage0=OK cx=off gx=off`。
+- **关键结论**：CX GDSC collapsed 时读 GPUCC 不会楔死 NoC（本次全程无卡死）→ stage 1 可以安全做电源时序：清 CX GDSC SW_COLLAPSE → 等 CX_HW_CTRL bit31 → GCC 三个 GPU 时钟 + GPUCC 分支 → 读 GMU 19.2MHz 计数器。
+
 **下一轮（stage 1）**：RPMh CX/MX 投票 → GPUCC 分支时钟 → a640_gmu.bin + HFI → SMMU 页表 → 3D 核上电读 RBBM。沿用 t19 降级中止原则。
