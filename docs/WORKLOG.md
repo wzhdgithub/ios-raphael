@@ -470,6 +470,8 @@ Stage Summary:
 
 **自动亮度定性**：ALS → CoreBrightness → **同一条 sel 50**。t22 修通 sel 50 = 自动亮度的执行端就绪；缺的是 ALS 传感器数据（I2C 光感驱动 + AppleALS HID 事件）→ 下一轮任务（MiCode raphael-p-oss dtsi 定芯片型号）。
 
+**t25 实机（2026-10-24 22:55 抓取）**：stage 1a 的 GDSC 时序成功——`cx_gdscr 0x222001 -> 0xf8222000`（bit31=1）、`cx_hw_ctrl=0x80001fe0`（bit31=1），`stage1: CX is on`；随后 `ahb=0x1 running`（CLK_OFF 清除）。但 `crc_ahb=0`、`cx_apb=0x80000000`（enable 未置位），被脚本的 `must=true` 判成 FAIL 并中止，GBIF 未读。判断：SM8150 上 crc_ahb/cx_apb 很可能由硬件控制（enable 位不可写），不是故障；0105 将两者降级为非致命并改为先 cxo/cxo_aon 后 ahb/crc_ahb/cx_apb，然后无条件读 GBIF。整机未卡死（SpringBoard 正常跑，日志尾部是 process sampler 的 SMP 采样，不是 panic）。
+
 **构建与产物（2026-10-24 22:52）**：CI run 40103285547 success；kernel 17,256,352 B / `ea3baa9e…`；镜像 `raphael-t25-gpupower-clean/debug.img` 17,358,959 B，clean `31671eed…` / debug `183df83c…`（clean/debug 单字节差 @0x33172，shim/DTB/ADT/cmdline 与 r33 逐字节一致）。已 boot clean 待实机判读。
 
 **下一轮判决点**：①启动行 `DSI ctrl0/ctrl1 probe ok`（谁宿主）；②拖滑条 `sel 50 (NNNN)` → `brightness NNN` 行 + 屏幕是否跟随；③插电 ≤5s 闪电 + `registering as AppleSmartBattery`。
