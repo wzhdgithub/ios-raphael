@@ -470,6 +470,8 @@ Stage Summary:
 
 **自动亮度定性**：ALS → CoreBrightness → **同一条 sel 50**。t22 修通 sel 50 = 自动亮度的执行端就绪；缺的是 ALS 传感器数据（I2C 光感驱动 + AppleALS HID 事件）→ 下一轮任务（MiCode raphael-p-oss dtsi 定芯片型号）。
 
+**构建与产物（2026-10-24 22:52）**：CI run 40103285547 success；kernel 17,256,352 B / `ea3baa9e…`；镜像 `raphael-t25-gpupower-clean/debug.img` 17,358,959 B，clean `31671eed…` / debug `183df83c…`（clean/debug 单字节差 @0x33172，shim/DTB/ADT/cmdline 与 r33 逐字节一致）。已 boot clean 待实机判读。
+
 **下一轮判决点**：①启动行 `DSI ctrl0/ctrl1 probe ok`（谁宿主）；②拖滑条 `sel 50 (NNNN)` → `brightness NNN` 行 + 屏幕是否跟随；③插电 ≤5s 闪电 + `registering as AppleSmartBattery`。
 
 ---

@@ -79,3 +79,13 @@ fastboot boot raphael-t12-gt9886-clean.img     # 稳定版 r28
 ## 下一轮（stage 2）预告
 
 GCC：`gpu_memnoc_gfx` / `gpu_snoc_dvm_gfx` / `ddrss_gpu_axi` 三时钟 + GPLL0 分频 → GPUCC `gmu_clk_src` 200 MHz + `cx_gmu` 分支 → 读 GMU 19.2 MHz 自走计数器（活体证据）→ 再谈 a640_gmu.bin + HFI + SMMU + GX。
+
+## 文件校验
+
+| 文件 | 大小 | SHA256 |
+|---|---|---|
+| `raphael-t25-gpupower-clean.img` | 17,358,959 B | `31671eed4435c1859cb170bbe38430b649c817c4d7beb221cb11adc4a5cee379` |
+| `raphael-t25-gpupower-debug.img` | 17,358,959 B | `183df83cf0fcf57d0298012d879f707f781f20dda059832d6c0a1be4d45c1aab` |
+
+内核：`kernel.development.raphael` 17,256,352 B / `ea3baa9eb12f2af18aca7f2d203d476b9af38c8e70d2e32fdbda19eed5a819c0`（CI run 40103285547）。
+构建：r33 clean 模板（shim/DTB/ADT/cmdline 逐字节复用）；clean/debug 仅差 `sweetfb_noconsole` 1 字节（镜像偏移 0x33172）。
