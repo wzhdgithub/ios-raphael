@@ -626,3 +626,18 @@ Stage Summary:
 **0110**：删除 GR1/CBAR 读取；保留一次 SCM IO 读 IDR0 记录状态；按 `0x8000 + n*0x1000` 读 CB0..CB4 的 SCTLR/TTBR0/TCR/FSR；判决 `cb_regs=responding/all-ones`。纯只读。
 
 **工程**：0110 对 0109 终态 `git apply --check` 通过（21 增 26 删）。
+
+---
+
+## Task 43 (r42/t32) — SMMU context 1 盲写 + GMU 固件落位（2026-10-25）
+
+**输入**：t29/t31 证明 SMMU 多数寄存器读出为垃圾（hypervisor 仿真不全），t30 SCM IO 被拒（-2）；厂商 kgsl 直接 MMIO 写 CBAR/SMR/S2CR/CB 寄存器。GMU 固件解析：TCM 14,892 B（ITCM）+ DDR 22,676 B（4 段：0x4000/0x40000/0x43fe0/0x57000）+ 运行期 log(0x60002000)/HFI(0x60006000)。
+
+**0111**（新增 `bsd/dev/a640_gmu_fw.h` 37,680 B 固件字节数组 + `sweet_gpu.c` +258 行）：
+- 4K 页表（kvtophys 物理地址、PTE shared/AF/nG/uncached），映射 4 个 DDR 段与 log/HFI；
+- CM3 保持复位，TCM 段逐字经 GMU ITCM(0x3000)/DTCM(0x7000) 窗口写入并回读；
+- DDR 段写入映射内存并 dc civac；
+- 盲写 SMMU context 1：CBAR/CBA2R、SCTLR=0、TCR2/TCR/TTBR0/TTBR1/MAIR0/1/FSR、TLBIASID/TLBSYNC、SCTLR_ON、SMR[5]/S2CR[5]→CB1；
+- 判决 `stage5=OK/PARTIAL`；**不释放 CM3**（stage 6 才启动）。
+
+**工程**：0111 对 0110 终态 `git apply --check` 通过；固件头文件以 LF 生成（首次 CRLF 触发了 git whitespace 警告，已 sed 修正）。
