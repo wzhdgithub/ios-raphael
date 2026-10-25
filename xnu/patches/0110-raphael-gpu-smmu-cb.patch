@@ -1,0 +1,60 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 6910d63..4d7b0a1 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -578,34 +578,33 @@ gpu_thread(void *arg, wait_result_t result)
+                 printf("SWEET GPU: stage4: smmu smr[%u]=%#x s2cr[%u]=%#x\n", i,
+                     gpu_rd(sm, SMMU_SMR(i)), i, gpu_rd(sm, SMMU_S2CR(i)));
+         }
+-        /* GR1 and the context banks do not answer this processor directly (t29:
+-         * reading CBAR at 0x1000 stalled the thread). The vendor reads such
+-         * registers through SCM IO; do the same, and cross-check IDR0. */
++        /* GR1 (CBAR/CBA2R at 0x1000) is not readable from here: t29 stalled the
++         * thread on it, and t30's SCM IO read was refused (-2). The vendor puts
++         * the context banks at base + 0x8000 + n*0x1000 (KGSL_IOMMU_CB0_OFFSET)
++         * and drives them with plain MMIO, so read those pages and find out
++         * whether the CB registers answer. No GR1 access in this round. */
+         int32_t io_status = -1;
+         uint32_t idr0_scm = gpu_scm_io_read(GPU_SMMU_PA + SMMU_IDR0, &io_status);
+         printf("SWEET GPU: stage4: scm_io read idr0 status=%d value=%#x (direct %#x)\n",
+             io_status, idr0_scm, idr0);
+-        bool io_ok = (io_status == 0);
+-        for (uint32_t i = 0; i < sm_contexts && i < 16 && io_ok; i++) {
+-                int32_t st = -1;
+-                uint32_t cbar = gpu_scm_io_read(GPU_SMMU_PA + sm_page + SMMU_CBAR(i), &st);
+-                printf("SWEET GPU: stage4: scm_io cbar[%u] status=%d value=%#x\n", i, st, cbar);
+-                if (st != 0) {
+-                        io_ok = false;
++        uint32_t cb_base = 0x8000u;
++        bool cb_ok = true;
++        for (uint32_t n = 0; n < sm_contexts && n < 5; n++) {
++                uint32_t base = cb_base + n * 0x1000u;
++                uint32_t sctlr = gpu_rd(sm, base + SMMU_CB_SCTLR);
++                uint32_t ttbr0 = gpu_rd(sm, base + SMMU_CB_TTBR0);
++                uint32_t tcr = gpu_rd(sm, base + SMMU_CB_TCR);
++                uint32_t fsr = gpu_rd(sm, base + SMMU_CB_FSR);
++                printf("SWEET GPU: stage4: cb%u sctlr=%#x ttbr0=%#x tcr=%#x fsr=%#x\n",
++                    n, sctlr, ttbr0, tcr, fsr);
++                if (sctlr == 0xffffffffu && ttbr0 == 0xffffffffu && tcr == 0xffffffffu &&
++                    fsr == 0xffffffffu) {
++                        cb_ok = false;
+                 }
+         }
+-        uint32_t cb0 = sm_pages * sm_page;
+-        if (io_ok) {
+-                int32_t s0, s1, s2, s3;
+-                uint32_t sctlr = gpu_scm_io_read(GPU_SMMU_PA + cb0 + SMMU_CB_SCTLR, &s0);
+-                uint32_t ttbr0 = gpu_scm_io_read(GPU_SMMU_PA + cb0 + SMMU_CB_TTBR0, &s1);
+-                uint32_t tcr = gpu_scm_io_read(GPU_SMMU_PA + cb0 + SMMU_CB_TCR, &s2);
+-                uint32_t fsr = gpu_scm_io_read(GPU_SMMU_PA + cb0 + SMMU_CB_FSR, &s3);
+-                printf("SWEET GPU: stage4: scm_io cb0 sctlr=%#x(%d) ttbr0=%#x(%d) tcr=%#x(%d) fsr=%#x(%d)\n",
+-                    sctlr, s0, ttbr0, s1, tcr, s2, fsr, s3);
+-        }
+-        printf("SWEET GPU: stage4=%s smmu=responding matches=%u contexts=%u scm_io=%s\n",
+-            io_ok ? "OK" : "PARTIAL", sm_matches, sm_contexts, io_ok ? "working" : "refused");
++        printf("SWEET GPU: stage4=%s smmu=responding matches=%u contexts=%u cb_regs=%s\n",
++            cb_ok ? "OK" : "PARTIAL", sm_matches, sm_contexts,
++            cb_ok ? "responding" : "all-ones");
+ 
+ out:
+         (void)thread_terminate(current_thread());

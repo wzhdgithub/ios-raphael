@@ -616,3 +616,13 @@ Stage Summary:
 **0109**：新增 `gpu_scm_io_read()`（SCM_FAST|SCM_64|SCM_SIP|SCM_CALL(5,1)，arginfo=1，arg=物理地址）；stage 4 保留直接 IDR/SMR/S2CR 读取，用 SCM IO 交叉验证 IDR0，并逐个读 CBAR 与 CB0 的 SCTLR/TTBR0/TCR/FSR；判决 `stage4=OK/PARTIAL scm_io=working/refused`；不再直接触碰 GR1。
 
 **工程**：0109 对 0108 终态 `git apply --check` 通过（42 增 9 删）。
+
+---
+
+## Task 42 (r41/t31) — SMMU context bank 页直读（绕开 GR1）（2026-10-25）
+
+**输入**：t29 直接读 GR1 CBAR(0x1000) 卡死线程；t30 SCM IO 读 IDR0 返回 status=-2（拒绝）。厂商 `kgsl_iommu.c`：`ctx->regbase = iommu->regbase + KGSL_IOMMU_CB0_OFFSET(0x8000) + (cb_num << CB_SHIFT)`，CB 寄存器用 `readl/writel` 直接访问。
+
+**0110**：删除 GR1/CBAR 读取；保留一次 SCM IO 读 IDR0 记录状态；按 `0x8000 + n*0x1000` 读 CB0..CB4 的 SCTLR/TTBR0/TCR/FSR；判决 `cb_regs=responding/all-ones`。纯只读。
+
+**工程**：0110 对 0109 终态 `git apply --check` 通过（21 增 26 删）。
