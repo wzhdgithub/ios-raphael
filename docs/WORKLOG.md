@@ -643,3 +643,19 @@ Stage Summary:
 **工程**：0111 对 0110 终态 `git apply --check` 通过；固件头文件以 LF 生成（首次 CRLF 触发了 git whitespace 警告，已 sed 修正）。
 
 **0111 编译修复（2026-10-25 11:02）**：CI run 40155835579 failure——`kvtophys` 未声明（BSD 层未导出 osfmk/vm/pmap.h 的该原型）。0111 增加 `extern uint64_t kvtophys(vm_offset_t);` 后重发（补丁对 0110 终态重新校验通过）。
+
+---
+
+## Task 44 (r43/t33) — 释放 CM3：GMU 固件启动（2026-10-25）
+
+**输入**：t32 `stage5=OK fw=loaded tcm_wrong=0 ddr_blocks=4`（TCM 3723 字、DDR 22,676 B、CB1 盲写成功）。
+
+**0112（sweet_gpu.c +128/-1）**：
+- HFI 页从 4 KiB 改为 16 KiB（表 + 3 队列 @4K 间隔需 13 KiB，XNU PAGE_SIZE 恰好 16 KiB）；
+- 填 HFI 表（vendor a6xx_hfi.c 布局）：words/first_queue=6/queue_words/queues=3、queue.start=0x60006000+848+4096n、type=prio<<8|n、status=1；
+- GBIF 解 halt；按 HackiOS step 15 写 GMU 启动寄存器（CX_FAL/CX_FALNEXT/GENERAL_7/FW_INIT_RESULT/BOOT_CONFIG=2/HFI_QTBL/AHB_FENCE_RANGE_0/CM3_CFG=0x4052/PWR_COL_CP_*/HFI_SFR_ADDR=chipid 0x06040000/RPMH_CTRL=0xf11 等）；
+- 释放 CM3_SYSRESET，轮询 3 s；判决 `stage6=OK/FAIL/PARTIAL`，附 fw_init/intr/hfi_ctrl/sptprac/rpmh 与 DTCM 版本。
+
+**风险**：本轮固件开始执行；SMMU 映射若有误会触 fault，最坏整机挂起（重启即恢复）。
+
+**工程**：0112 对 0111 终态 `git apply --check` 通过。
