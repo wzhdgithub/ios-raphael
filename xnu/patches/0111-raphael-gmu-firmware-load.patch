@@ -3151,10 +3151,10 @@ index 0000000..2c7a8d4
 +    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 +};
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
-index 4d7b0a1..ae7cd92 100644
+index 4d7b0a1..c1ab73d 100644
 --- a/bsd/dev/sweet_gpu.c
 +++ b/bsd/dev/sweet_gpu.c
-@@ -51,6 +51,10 @@
+@@ -51,12 +51,18 @@
  #include <sys/systm.h>
  #include <kern/clock.h>
  #include <mach/mach_time.h>
@@ -3165,7 +3165,15 @@ index 4d7b0a1..ae7cd92 100644
  #include <kern/thread.h>
  #include <kern/sched_prim.h>
  #include <machine/machine_routines.h>
-@@ -231,6 +235,146 @@ gpu_counter_hz(vm_offset_t gmu)
+ #include <pexpert/pexpert.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++/* osfmk/vm/pmap.h does not reach BSD in this configuration. */
++extern uint64_t kvtophys(vm_offset_t);
+ /* Mach MIG declaration is not included by BSD's exported thread.h. */
+ extern kern_return_t thread_terminate(thread_t);
+ void sweet_gpu_probe(void);
+@@ -231,6 +237,146 @@ gpu_counter_hz(vm_offset_t gmu)
          return nanos ? (uint32_t)(((uint64_t)(after - before) * NSEC_PER_SEC) / nanos) : 0;
  }
  
@@ -3312,7 +3320,7 @@ index 4d7b0a1..ae7cd92 100644
  static void
  gpu_thread(void *arg, wait_result_t result)
  {
-@@ -606,6 +750,120 @@ gpu_thread(void *arg, wait_result_t result)
+@@ -606,6 +752,120 @@ gpu_thread(void *arg, wait_result_t result)
              cb_ok ? "OK" : "PARTIAL", sm_matches, sm_contexts,
              cb_ok ? "responding" : "all-ones");
  

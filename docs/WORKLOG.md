@@ -641,3 +641,5 @@ Stage Summary:
 - 判决 `stage5=OK/PARTIAL`；**不释放 CM3**（stage 6 才启动）。
 
 **工程**：0111 对 0110 终态 `git apply --check` 通过；固件头文件以 LF 生成（首次 CRLF 触发了 git whitespace 警告，已 sed 修正）。
+
+**0111 编译修复（2026-10-25 11:02）**：CI run 40155835579 failure——`kvtophys` 未声明（BSD 层未导出 osfmk/vm/pmap.h 的该原型）。0111 增加 `extern uint64_t kvtophys(vm_offset_t);` 后重发（补丁对 0110 终态重新校验通过）。
