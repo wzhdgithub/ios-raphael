@@ -671,3 +671,15 @@ Stage Summary:
 **0113（+8/-1）**：轮询延长到 20 秒；释放后回读 `CM3_SYSRESET/BOOT_CONFIG/CM3_CFG/AO_HOST_INTR(0x24c14)/AHB_FENCE(0x24c4c)`；新增 after-release 诊断行。目的：区分"19.2 MHz 下启动慢"与"CM3 没执行"。
 
 **工程**：0113 对 0112 终态 `git apply --check` 通过。
+
+---
+
+## Task 46 (r45/t35) — GMU 时钟 200 MHz（2026-10-25）
+
+**输入**：t34 debug `sysreset=0 boot_config=0x2 cm3_cfg=0x4052` 但 `fw_init=0`（20 s）→ CM3 无时钟。
+
+**0114（+31）**：释放 CM3 前做厂商 RCG 序列——GCC 0x52004 bit16（gpll0_div gate）→ GPUCC CMD RCGR ROOT_EN、轮询 ROOT_OFF 清 → CFG=0x602（GPLL0_OUT_MAIN_DIV /1.5=200 MHz）→ UPDATE → 清 ROOT_EN；回读 before/after cmd/cfg；`gpuclk=0` 可跳过。
+
+**依据**：gpucc-sm8150.c 的 gmu_clk_src freq table（200 MHz = GPLL0_DIV 1.5）+ clk-rcg2.c 的 force-enable/configure 语义（CMD_ROOT_EN bit1、ROOT_OFF bit31、CFG src [10:8]、div [4:0]、mode [13:12]）。
+
+**工程**：0114 对 0113 终态 `git apply --check` 通过。
