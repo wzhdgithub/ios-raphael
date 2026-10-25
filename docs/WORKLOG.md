@@ -707,3 +707,15 @@ Stage Summary:
 **0116（+26）**：把 GCC 0x52004 bit16 + GPUCC RCG（ROOT_EN/CFG=0x602/UPDATE/清 force）从 stage 6 提前到 stage 2，在使能 cx_gmu 与任何 GMU 读取之前；stage 6 保留幂等重复；新增 `stage2: gmu clock` 日志。
 
 **工程**：0116 对 0115 终态 `git apply --check` 通过。
+
+---
+
+## Task 49 (r48/t38) — 跳过 stage-2 GMU 读取 + stage-6 日志窗口（2026-10-25）
+
+**输入**：t37 `gpugmu=0` 隔离实验——stage 0/1 完整打印、系统不挂（flush #63），锁定挂点在 stage 2 的 GMU 寄存器读取（0x7e0xx），t36/t37 均挂于此；t35 因读错偏移（a660）而幸免。
+
+**0117（+8/-1）**：stage 2 的 GMU 读取默认关闭（`gpuread=1` 才开）；stage 6 写 GMU 启动寄存器前加 11 秒日志窗口与 `GMU config registers written` 标记；其余不变。
+
+**目的**：让线程穿过 stage 2 进入 stage 5/6，并用落盘日志定位 GMU 写/启动是否可执行。
+
+**工程**：0117 对 0116 终态 `git apply --check` 通过。
