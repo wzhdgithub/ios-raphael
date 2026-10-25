@@ -1,0 +1,108 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -126,15 +126,21 @@
+ #define GBIF_SCACHE_CNTL0     0x0004u
+ #define GBIF_HALT             0x0114u
+ #define GBIF_HALT_ACK         0x0118u
+-/* a640 GMU register byte offsets: a6xx_reg.h word indices << 2. */
+-#define GMU_CM3_SYSRESET      0x7e000u
+-#define GMU_CM3_BOOT_CONFIG   0x7e004u
+-#define GMU_CM3_FW_INIT_RESULT 0x7e070u
+-#define GMU_HFI_CTRL_STATUS   0x7e600u
+-#define GMU_HFI_VERSION_INFO  0x7e604u
+-#define GMU_RPMH_POWER_STATE  0x7e3b0u
+-#define GMU_SPTPRAC_PWR_CLK_STATUS 0x7e340u
+-#define GMU_AO_COUNTER_L      0x7e220u
++/* a6xx_reg.h offsets are relative to the GPU register base (0x2c00000), but
++ * the GMU register file is ioremapped at 0x2c6a000 (size 0x25000), so every
++ * offset must be rebased by -0x6a000: 0x2c00000 + 0x7e000 == 0x2c6a000 +
++ * 0x14000.  0115 forgot the rebase, so the first GMU access went past the
++ * mapping and panicked (translation fault at gpu_thread stage 5). */
++#define GMU_GPU_TO_GMU_BASE   0x6a000u
++#define GMU_CSR(off)          ((off) - GMU_GPU_TO_GMU_BASE)
++#define GMU_CM3_SYSRESET      GMU_CSR(0x7e000u)
++#define GMU_CM3_BOOT_CONFIG   GMU_CSR(0x7e004u)
++#define GMU_CM3_FW_INIT_RESULT GMU_CSR(0x7e070u)
++#define GMU_HFI_CTRL_STATUS   GMU_CSR(0x7e600u)
++#define GMU_HFI_VERSION_INFO  GMU_CSR(0x7e604u)
++#define GMU_RPMH_POWER_STATE  GMU_CSR(0x7e3b0u)
++#define GMU_SPTPRAC_PWR_CLK_STATUS GMU_CSR(0x7e340u)
++#define GMU_AO_COUNTER_L      GMU_CSR(0x7e220u)
+ 
+ static int gpu_sleep_chan;
+ 
+@@ -271,26 +277,26 @@
+ #define GMU_LOG_SIZE          0x4000u
+ #define GMU_HFI_ADDRESS       0x60006000u
+ #define GMU_HFI_SIZE          0x4000u
+-#define GMU_ITCM_WINDOW       0x6d000u     /* A6XX_GMU_CM3_ITCM_START << 2 */
+-#define GMU_DTCM_WINDOW       0x71000u     /* A6XX_GMU_CM3_DTCM_START << 2 */
++#define GMU_ITCM_WINDOW       GMU_CSR(0x6d000u)   /* 0x3000, A6XX_GMU_CM3_ITCM_START << 2 */
++#define GMU_DTCM_WINDOW       GMU_CSR(0x71000u)   /* 0x7000, A6XX_GMU_CM3_DTCM_START << 2 */
+ 
+ /* a640 GMU registers for the start sequence (a6xx_reg.h word indices << 2). */
+-#define GMU_CM3_CFG            0x7e0b4u
+-#define GMU_CX_GMU_WFI_CONFIG  0x7e008u
+-#define GMU_GENERAL_7          0x7e730u
+-#define GMU_HFI_QTBL_ADDR      0x7e614u
+-#define GMU_HFI_QTBL_INFO      0x7e610u
+-#define GMU_AHB_FENCE_RANGE_0  0x8ec44u
+-#define GMU_PWR_COL_CP_MSG     0x7e400u
+-#define GMU_HFI_SFR_ADDR       0x7e608u
+-#define GMU_SYS_BUS_CONFIG     0x7d03cu
+-#define GMU_ICACHE_CONFIG      0x7d000u
+-#define GMU_DCACHE_CONFIG      0x7d004u
+-#define GMU_PWR_COL_INTER_FRAME_CTRL 0x7e300u
+-#define GMU_RPMH_CTRL          0x7e3a0u
+-#define GMU_GMU2HOST_INTR_CLR  0x7e644u
+-#define GMU_GMU2HOST_INTR_INFO 0x7e648u
+-#define GMU_HFI_CTRL_INIT      0x7e618u
++#define GMU_CM3_CFG            GMU_CSR(0x7e0b4u)
++#define GMU_CX_GMU_WFI_CONFIG  GMU_CSR(0x7e008u)
++#define GMU_GENERAL_7          GMU_CSR(0x7e730u)
++#define GMU_HFI_QTBL_ADDR      GMU_CSR(0x7e614u)
++#define GMU_HFI_QTBL_INFO      GMU_CSR(0x7e610u)
++#define GMU_AHB_FENCE_RANGE_0  GMU_CSR(0x8ec44u)
++#define GMU_PWR_COL_CP_MSG     GMU_CSR(0x7e400u)
++#define GMU_HFI_SFR_ADDR       GMU_CSR(0x7e608u)
++#define GMU_SYS_BUS_CONFIG     GMU_CSR(0x7d03cu)
++#define GMU_ICACHE_CONFIG      GMU_CSR(0x7d000u)
++#define GMU_DCACHE_CONFIG      GMU_CSR(0x7d004u)
++#define GMU_PWR_COL_INTER_FRAME_CTRL GMU_CSR(0x7e300u)
++#define GMU_RPMH_CTRL          GMU_CSR(0x7e3a0u)
++#define GMU_GMU2HOST_INTR_CLR  GMU_CSR(0x7e644u)
++#define GMU_GMU2HOST_INTR_INFO GMU_CSR(0x7e648u)
++#define GMU_HFI_CTRL_INIT      GMU_CSR(0x7e618u)
+ #define GMU_RPMH_CTRL_ALL      0xf11u
+ #define GMU_CHIPID             0x06040000u      /* raphael dt qcom,chipid (Adreno 640) */
+ #define GMU_STARTED_VALUE      0xBABEFACEu      /* vendor a6xx_gmu_start polls this exact value */
+@@ -697,6 +703,8 @@
+         int gpuread = 0;
+         (void)PE_parse_boot_argn("gpuread", &gpuread, sizeof(gpuread));
+         if (gmu_on && gpuread) {
++                printf("SWEET GPU: stage2: GMU read window in 3 s (flush)\n");
++                gpu_wait(3000);
+                 vm_offset_t gmu = ml_io_map(GPU_GMU_PA, GPU_GMU_SIZE);
+                 if (!gmu) {
+                         printf("SWEET GPU: stage2=FAIL GMU mapping failed\n");
+@@ -832,6 +840,9 @@
+                 printf("SWEET GPU: stage5=FAIL GMU mapping failed\n");
+                 goto out;
+         }
++        printf("SWEET GPU: stage5: GMU map va=%#lx sysreset=%#x, write window in 3 s (flush)\n",
++            (unsigned long)gmu5, GMU_CM3_SYSRESET);
++        gpu_wait(3000);
+         gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);      /* held while its memory is written */
+         gpu_wait(1);
+ 
+@@ -1033,8 +1044,8 @@
+         uint32_t sysreset_after = gpu_rd(gmu5, GMU_CM3_SYSRESET);
+         uint32_t bootcfg_after = gpu_rd(gmu5, GMU_CM3_BOOT_CONFIG);
+         uint32_t cm3cfg_after = gpu_rd(gmu5, GMU_CM3_CFG);
+-        uint32_t ao_intr = gpu_rd(gmu5, 0x8ec14u);
+-        uint32_t ahb_fence = gpu_rd(gmu5, 0x8ec4cu);
++        uint32_t ao_intr = gpu_rd(gmu5, GMU_CSR(0x8ec14u));
++        uint32_t ahb_fence = gpu_rd(gmu5, GMU_CSR(0x8ec4cu));
+         uint32_t intr = gpu_rd(gmu5, GMU_GMU2HOST_INTR_INFO);
+         uint32_t hfi_status = gpu_rd(gmu5, GMU_HFI_CTRL_STATUS);
+         uint32_t core_ver = gpu_rd(gmu5, 0xafe0u);

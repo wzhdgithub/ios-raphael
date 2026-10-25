@@ -719,3 +719,19 @@ Stage Summary:
 **目的**：让线程穿过 stage 2 进入 stage 5/6，并用落盘日志定位 GMU 写/启动是否可执行。
 
 **工程**：0117 对 0116 终态 `git apply --check` 通过。
+
+---
+
+## Task 50 (r49/t39) — t38 挂死实为 data abort panic：GMU CSR 偏移少了一次 rebase（2026-10-25）
+
+**输入**：t38（0117，stage-2 GMU 读闸门 + stage-6 11 s 窗口）重放。ring 在 30 秒唤醒处停在 flush #3（123,041 B，末行 #1862），健康对照 `gpugmu=0` 为 flush #63；屏幕在 30 秒后冻结。
+
+**决定性证据（屏幕）**：`panic(cpu 4 caller ...): Kernel data abort. at pc 0xfffffe00074fc6ec, lr 0xfffffe00074fc6d4`。用 CI artifact 的 `kernel.development.raphael` 符号表 + 从 0103–0117 patch 重建的 `sweet_gpu.o` DWARF 行表解析：pc = `gpu_thread+0x1268` → `sweet_gpu.c:835`，lr → `sweet_gpu.c:831`；835 行是 **stage 5 第一条 GMU 写** `gpu_wr(gmu5, GMU_CM3_SYSRESET, 1)`。
+
+**根因**：0115 的“a640 寄存器表”使用 **GPU 基址（0x2c00000）相对** 的 a6xx_reg.h 偏移（SYSRESET 0x7e000），但 `gmu5` 是 `ml_io_map(0x2c6a000, 0x25000)` 的 GMU 映射：`0x2c6a000 + 0x7e000 = 0x2ce4000` 在映射外 → 翻译错误 → data abort panic。旧 a660 值 0x14000 与 0x7e000 指向同一物理寄存器（0x2c7e000）；t27/t28 的 `stage2: gmu sysreset=0x1 ... counter=21197600 Hz` 证明旧偏移一直读到的是真实 GMU CSR。0115 真正有效的只有固件布局：DTCM VA 0x40000、ICACHE/DCACHE 经 SMMU、`ddr_blocks=2`、`0xBABEFACE` 判定。
+
+**0118（+29/-25）**：新增 `GMU_CSR(x)=x-0x6a000`，全部 GMU CSR/TCM 窗口偏移 rebase 到 GMU 基址；保留固件布局修正；stage 2 GMU 读取前与 stage 5 首写前各加 3 s 落盘窗口。打包 cmdline 追加 `gpuread=1 ufslogsecs=1`。
+
+**教训**：SoC 寄存器头文件的偏移基准必须写清楚（GPU 基址 vs GMU 基址）；跨基址复用常量时先做地址等式验算，再用旧日志里的真实读数交叉验证。panic 的 pc/lr 配合内核符号表 + `.a` 里的 DWARF 行表可以在 Windows 上完成精确到行的定位（`llvm-symbolizer` 来自 Android NDK）。
+
+**工程**：0118 对 0117 终态 `patch -p1 --dry-run` 通过。
