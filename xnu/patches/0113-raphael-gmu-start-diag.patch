@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index 4bb979a..2519c7f 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -967,13 +967,18 @@ gpu_thread(void *arg, wait_result_t result)
+         gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
+ 
+         uint32_t fw_result = 0;
+-        for (int i = 0; i < 3000; i++) {
++        for (int i = 0; i < 20000; i++) {
+                 fw_result = gpu_rd(gmu5, GMU_CM3_FW_INIT_RESULT);
+                 if ((fw_result & GMU_STARTED_MASK) == GMU_STARTED || (fw_result & GMU_FAILED) != 0) {
+                         break;
+                 }
+                 gpu_wait(1);
+         }
++        uint32_t sysreset_after = gpu_rd(gmu5, GMU_CM3_SYSRESET);
++        uint32_t bootcfg_after = gpu_rd(gmu5, GMU_CM3_BOOT_CONFIG);
++        uint32_t cm3cfg_after = gpu_rd(gmu5, GMU_CM3_CFG);
++        uint32_t ao_intr = gpu_rd(gmu5, 4u * 0x9305u);
++        uint32_t ahb_fence = gpu_rd(gmu5, 4u * 0x9313u);
+         uint32_t intr = gpu_rd(gmu5, GMU_GMU2HOST_INTR_INFO);
+         uint32_t hfi_status = gpu_rd(gmu5, GMU_HFI_CTRL_STATUS);
+         uint32_t core_ver = gpu_rd(gmu5, 0xafe0u);
+@@ -983,6 +988,8 @@ gpu_thread(void *arg, wait_result_t result)
+         uint32_t rpmh = gpu_rd(gmu5, GMU_RPMH_POWER_STATE);
+         printf("SWEET GPU: stage6: fw_init=%#x intr=%#x hfi_ctrl=%#x sptprac=%#x rpmh=%#x\n",
+             fw_result, intr, hfi_status, sptprac, rpmh);
++        printf("SWEET GPU: stage6: after release sysreset=%#x boot_config=%#x cm3_cfg=%#x ao_intr=%#x ahb_fence=%#x\n",
++            sysreset_after, bootcfg_after, cm3cfg_after, ao_intr, ahb_fence);
+         printf("SWEET GPU: stage6: gmu versions core=%#x power=%#x hfi=%#x\n",
+             core_ver, power_ver, hfi_ver);
+         if ((fw_result & GMU_STARTED_MASK) == GMU_STARTED) {

@@ -661,3 +661,13 @@ Stage Summary:
 **工程**：0112 对 0111 终态 `git apply --check` 通过。
 
 **0112 编译修复（2026-10-25 11:28）**：CI run 40157617046 failure——stage 6 的 `uint32_t result` 与线程参数 `wait_result_t result` 重名。改名 `fw_result` 后重发（补丁对 0111 终态重新校验通过）。
+
+---
+
+## Task 45 (r44/t34) — CM3 启动诊断（2026-10-25）
+
+**输入**：t33 `fw_init=0 intr=0 hfi_ctrl=0 sptprac=0xc0 rpmh=0xf`，3 秒超时。
+
+**0113（+8/-1）**：轮询延长到 20 秒；释放后回读 `CM3_SYSRESET/BOOT_CONFIG/CM3_CFG/AO_HOST_INTR(0x24c14)/AHB_FENCE(0x24c4c)`；新增 after-release 诊断行。目的：区分"19.2 MHz 下启动慢"与"CM3 没执行"。
+
+**工程**：0113 对 0112 终态 `git apply --check` 通过。
