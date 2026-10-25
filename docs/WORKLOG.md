@@ -659,3 +659,5 @@ Stage Summary:
 **风险**：本轮固件开始执行；SMMU 映射若有误会触 fault，最坏整机挂起（重启即恢复）。
 
 **工程**：0112 对 0111 终态 `git apply --check` 通过。
+
+**0112 编译修复（2026-10-25 11:28）**：CI run 40157617046 failure——stage 6 的 `uint32_t result` 与线程参数 `wait_result_t result` 重名。改名 `fw_result` 后重发（补丁对 0111 终态重新校验通过）。

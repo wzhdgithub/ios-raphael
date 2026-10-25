@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
-index c1ab73d..37266cc 100644
+index c1ab73d..4bb979a 100644
 --- a/bsd/dev/sweet_gpu.c
 +++ b/bsd/dev/sweet_gpu.c
 @@ -270,10 +270,49 @@ gpu_counter_hz(vm_offset_t gmu)
@@ -118,10 +118,10 @@ index c1ab73d..37266cc 100644
 +        printf("SWEET GPU: stage6: GMU configured (chip %#x), releasing CM3\n", GMU_CHIPID);
 +        gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
 +
-+        uint32_t result = 0;
++        uint32_t fw_result = 0;
 +        for (int i = 0; i < 3000; i++) {
-+                result = gpu_rd(gmu5, GMU_CM3_FW_INIT_RESULT);
-+                if ((result & GMU_STARTED_MASK) == GMU_STARTED || (result & GMU_FAILED) != 0) {
++                fw_result = gpu_rd(gmu5, GMU_CM3_FW_INIT_RESULT);
++                if ((fw_result & GMU_STARTED_MASK) == GMU_STARTED || (fw_result & GMU_FAILED) != 0) {
 +                        break;
 +                }
 +                gpu_wait(1);
@@ -134,15 +134,15 @@ index c1ab73d..37266cc 100644
 +        uint32_t sptprac = gpu_rd(gmu5, GMU_SPTPRAC_PWR_CLK_STATUS);
 +        uint32_t rpmh = gpu_rd(gmu5, GMU_RPMH_POWER_STATE);
 +        printf("SWEET GPU: stage6: fw_init=%#x intr=%#x hfi_ctrl=%#x sptprac=%#x rpmh=%#x\n",
-+            result, intr, hfi_status, sptprac, rpmh);
++            fw_result, intr, hfi_status, sptprac, rpmh);
 +        printf("SWEET GPU: stage6: gmu versions core=%#x power=%#x hfi=%#x\n",
 +            core_ver, power_ver, hfi_ver);
-+        if ((result & GMU_STARTED_MASK) == GMU_STARTED) {
++        if ((fw_result & GMU_STARTED_MASK) == GMU_STARTED) {
 +                printf("SWEET GPU: stage6=OK fw=running (GMU firmware started; HFI queues are stage 7)\n");
-+        } else if ((result & GMU_FAILED) != 0) {
-+                printf("SWEET GPU: stage6=FAIL fw=reported-failure fw_init=%#x\n", result);
++        } else if ((fw_result & GMU_FAILED) != 0) {
++                printf("SWEET GPU: stage6=FAIL fw=reported-failure fw_init=%#x\n", fw_result);
 +        } else {
-+                printf("SWEET GPU: stage6=PARTIAL fw=did-not-start fw_init=%#x (timeout)\n", result);
++                printf("SWEET GPU: stage6=PARTIAL fw=did-not-start fw_init=%#x (timeout)\n", fw_result);
 +        }
 +
  out:
