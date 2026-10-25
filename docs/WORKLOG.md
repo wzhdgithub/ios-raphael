@@ -735,3 +735,17 @@ Stage Summary:
 **教训**：SoC 寄存器头文件的偏移基准必须写清楚（GPU 基址 vs GMU 基址）；跨基址复用常量时先做地址等式验算，再用旧日志里的真实读数交叉验证。panic 的 pc/lr 配合内核符号表 + `.a` 里的 DWARF 行表可以在 Windows 上完成精确到行的定位（`llvm-symbolizer` 来自 Android NDK）。
 
 **工程**：0118 对 0117 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 51 (r50/t40) — t39 打通 GMU 寄存器；CM3 不执行 → SMMU S2CR 是 BYPASS（2026-10-25）
+
+**t39（0118）实机结果**：ring total 225,565 B / flush #133，系统全程存活（首次 30 秒唤醒不 panic）。stage 2 GMU 读恢复：`sysreset=0x1 boot_config=0 fw_init=0`、`rpmh=0xf sptprac=0xc0`、`counter=19200000 Hz`；stage 4 SMMU OK；stage 5 `tcm=5464 words wrong=0 ddr_blocks=2`、`stage5=OK`；stage 6 配置写全部接受（`GMU config registers written`，释放后 `sysreset=0 boot_config=0x2 cm3_cfg=0x4052`，版本 `core=0x20000105`），但 **`fw_init=0`，CM3 不执行**。→ 0118 的 −0x6a000 rebase 完全正确，问题转入 SMMU/启动条件。
+
+**根因（0119）**：固件里写 `0xBABEFACE` 的代码位于 **ICACHE 区 VMA 0x4000**（gmu_vma），该区是经 GMU SMMU 映射的宿主内存；stage 5 的 `SMMU_S2CR(5)` 写的是 `1u`，按 ARM SMMU-500 语义 = **TYPE=1 (BYPASS), CBNDX=0**，不是注释声称的“stream 5 → context 1”。CM3 因而从物理 0x4000 取指、HFI/log 也绕过翻译 → 永远写不出 FW_INIT。
+
+**0119（+30/-6）**：S2CR(5)=1<<8（TYPE=0 翻译，CBNDX=1）；补回 vendor 的 `GMU_PWR_COL_CP_RESP=0`（0115 误删）；AHB fence 改为 a640 上游值 `BIT31|0xa<<18|0xa0`；启动前清零 GMU 日志页，失败后 dump 前 16 word + log 写指针 + SMMU CB FSR。
+
+**依据**：ARM SMMU-500 S2CR TYPE[1:0]/CBNDX[15:8]；上游 `a6xx_gmu.c` 的 fw_load/start 序列；HackiOS `redwood_adreno.c` step_gmu_start 对照；raphael DTB（gmu_kernel iommus = SID 5 mask 0x400，GMU reg size 0x30000）。
+
+**工程**：0119 对 0118 终态 `patch -p1 --dry-run` 通过。

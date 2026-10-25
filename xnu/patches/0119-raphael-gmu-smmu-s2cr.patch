@@ -1,0 +1,80 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -288,6 +288,7 @@
+ #define GMU_HFI_QTBL_INFO      GMU_CSR(0x7e610u)
+ #define GMU_AHB_FENCE_RANGE_0  GMU_CSR(0x8ec44u)
+ #define GMU_PWR_COL_CP_MSG     GMU_CSR(0x7e400u)
++#define GMU_PWR_COL_CP_RESP    GMU_CSR(0x7e404u)
+ #define GMU_HFI_SFR_ADDR       GMU_CSR(0x7e608u)
+ #define GMU_SYS_BUS_CONFIG     GMU_CSR(0x7d03cu)
+ #define GMU_ICACHE_CONFIG      GMU_CSR(0x7d000u)
+@@ -325,6 +326,15 @@
+         __asm__ volatile ("dsb sy");
+ }
+ 
++static void
++gpu_from_memory(vm_offset_t start, vm_size_t size)
++{
++        for (vm_offset_t line = start & ~(vm_offset_t)63; line < start + size; line += 64) {
++                __asm__ volatile ("dc ivac, %0" : : "r" (line));
++        }
++        __asm__ volatile ("dsb sy");
++}
++
+ static uint64_t
+ gpu_table_phys(const uint64_t *table)
+ {
+@@ -905,6 +915,8 @@
+                 printf("SWEET GPU: stage5=FAIL cannot map the GMU log/HFI memory\n");
+                 goto out;
+         }
++        memset((void *)log_mem, 0, log_sz);
++        gpu_to_memory(log_mem, log_sz);
+         gpu_tables_commit();
+         printf("SWEET GPU: stage5: %u tables, root pa=%#llx, fw tcm=%u words wrong=%u, ddr=%u B in %d blocks, log/hfi mapped\n",
+             gpu_table_count, (unsigned long long)gpu_table_phys(root), tcm_words, tcm_wrong,
+@@ -932,9 +944,12 @@
+         gpu_wait(10);
+         gpu_wr(sm, cb + SMMU_CB_SCTLR, SMMU_SCTLR_ON);
+         gpu_wr(sm, SMMU_SMR(5), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 5u);
+-        gpu_wr(sm, SMMU_S2CR(5), 1u);           /* stream 5 translates through context 1 */
+-        printf("SWEET GPU: stage5: smmu cb1@%#x ttbr=%#llx, smr5/s2cr5 written\n", cb,
+-            (unsigned long long)ttbr);
++        /* S2CR: TYPE [1:0] = 0 (translation), CBNDX [15:8] = 1.  The old 1u
++         * meant TYPE=bypass, so the GMU fetched its ICACHE code from physical
++         * 0x4000 instead of the SMMU-mapped host page and never ran. */
++        gpu_wr(sm, SMMU_S2CR(5), 1u << 8);
++        printf("SWEET GPU: stage5: smmu cb1@%#x ttbr=%#llx, smr5/s2cr5=%#x sent\n", cb,
++            (unsigned long long)ttbr, 1u << 8);
+ 
+         printf("SWEET GPU: stage5=%s fw=%s tcm_wrong=%u ddr_blocks=%d CM3=HELD_IN_RESET (stage 6 releases)\n",
+             (tcm_wrong == 0 && ddr_blocks == 2) ? "OK" : "PARTIAL",
+@@ -987,8 +1002,11 @@
+         gpu_wr(gmu5, GMU_CM3_BOOT_CONFIG, 2);          /* TCM_BOOT */
+         gpu_wr(gmu5, GMU_HFI_QTBL_ADDR, GMU_HFI_ADDRESS);
+         gpu_wr(gmu5, GMU_HFI_QTBL_INFO, 1);
+-        gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, 1u << 31 | (0xa << 2) << 18 | 0x8a0);
++        /* a640 (upstream a6xx): upper 0xa, lower 0xa0; HackiOS's a660 value
++         * 0x80a008a0 belongs to a different fence encoding. */
++        gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, 1u << 31 | 0xa << 18 | 0xa0);
+         gpu_wr(gmu5, GMU_CM3_CFG, 0x4052);
++        gpu_wr(gmu5, GMU_PWR_COL_CP_RESP, 0);   /* log write pointer, vendor zeroes it */
+         gpu_wr(gmu5, GMU_HFI_SFR_ADDR, GMU_CHIPID);
+         gpu_wr(gmu5, GMU_PWR_COL_CP_MSG, GMU_LOG_ADDRESS | (GMU_LOG_SIZE / 4096 - 1));
+         gpu_wr(gmu5, GMU_SYS_BUS_CONFIG, 1);
+@@ -1046,6 +1064,15 @@
+         uint32_t cm3cfg_after = gpu_rd(gmu5, GMU_CM3_CFG);
+         uint32_t ao_intr = gpu_rd(gmu5, GMU_CSR(0x8ec14u));
+         uint32_t ahb_fence = gpu_rd(gmu5, GMU_CSR(0x8ec4cu));
++        uint32_t log_wptr = gpu_rd(gmu5, GMU_PWR_COL_CP_RESP);
++        uint32_t smmu_fsr = gpu_rd(sm, cb + SMMU_CB_FSR);
++        gpu_from_memory(log_mem, log_sz);
++        printf("SWEET GPU: stage6: gmu log wptr=%#x smmu_fsr=%#x\n", log_wptr, smmu_fsr);
++        for (int i = 0; i < 16; i += 4) {
++                printf("SWEET GPU: stage6: gmu log %08x %08x %08x %08x\n",
++                    ((volatile uint32_t *)log_mem)[i], ((volatile uint32_t *)log_mem)[i + 1],
++                    ((volatile uint32_t *)log_mem)[i + 2], ((volatile uint32_t *)log_mem)[i + 3]);
++        }
+         uint32_t intr = gpu_rd(gmu5, GMU_GMU2HOST_INTR_INFO);
+         uint32_t hfi_status = gpu_rd(gmu5, GMU_HFI_CTRL_STATUS);
+         uint32_t core_ver = gpu_rd(gmu5, 0xafe0u);

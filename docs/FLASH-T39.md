@@ -72,3 +72,34 @@ fastboot boot raphael-t38-gate-debug.img
 fastboot boot raphael-t37-earlyclk-clean.img
 fastboot boot raphael-t12-gt9886-clean.img
 ```
+
+## 结果（2026-10-25 18:42，开机 4 分钟拉取）
+
+ring：**total 225,565 B / flush #133**（系统全程存活，第一次在 30 秒唤醒后没有 panic）。
+
+```
+stage2: gmu clock cmd=0x80000000 cfg=0x602 (200 MHz)
+stage2: gmu_rcgr=0x80000000 src=0x602
+stage2: clearing CMD_ROOT_OFF (0x80000000 -> 0x1)
+stage2: cx_gmu=0x4221 running
+stage2: gmu sysreset=0x1 boot_config=0 fw_init=0 hfi_ver=0
+stage2: gmu rpmh_state=0xf sptprac=0xc0 counter=19200000 Hz
+stage2=OK gmu=responding counter=19.2MHz crystal
+tz=available (PAS 13 unsupported)
+stage4=OK smmu=responding matches=6 contexts=5
+stage5: GMU map va=0xfffffe1000292000 sysreset=0x14000
+stage5: fw ... 0x4000 -> memory, 0x40000/0x43fe0 -> DTCM, 0x57000 -> memory
+stage5: fw tcm=5464 words wrong=0 ddr=15712 B in 2 blocks
+stage5=OK fw=loaded tcm_wrong=0 ddr_blocks=2 CM3=HELD_IN_RESET
+stage6: GMU registers in 11 s
+stage6: GMU config registers written
+stage6: GMU configured (chip 0x6040000), releasing CM3
+stage6: fw_init=0 intr=0 hfi_ctrl=0 sptprac=0xc0 rpmh=0xf
+stage6: after release sysreset=0 boot_config=0x2 cm3_cfg=0x4052
+stage6: gmu versions core=0x20000105 power=0x20000012 hfi=0x20000001
+stage6=FAIL fw=did-not-start fw_init=0 (timeout)
+```
+
+**结论**：0118 的 rebase 完全正确——GMU 寄存器读写、时钟、TCM、SMMU 都活了，stage 5 通过，
+stage 6 的配置写也被接受（`sysreset=0`、`boot_config=0x2`、`cm3_cfg=0x4052`）；**只有 CM3 不执行**。
+下一步（t40/0119）修 SMMU S2CR（见 `FLASH-T40.md`）。
