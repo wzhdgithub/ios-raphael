@@ -695,3 +695,15 @@ Stage Summary:
 **教训**：跨 SoC 移植时 GMU/TCM 映射不能照抄；必须从目标 SoC 的 a6xx_reg.h/gmu_vma 取偏移。此前 t33~t35 的"CM3 不启动"全部由此解释。
 
 **工程**：0115 对 0114 终态 `git apply --check` 通过。
+
+---
+
+## Task 48 (r47/t37) — GMU 时钟提前到 GMU 读取之前（2026-10-25）
+
+**输入**：t36（a640 正确寄存器表）回归——30 秒唤醒后整机挂死、flush 停在 ~30 s。t35 对照（错误偏移）正常打印 stage 0，证明环境/线程调度无问题。
+
+**根因**：stage 2 在 200 MHz RCG 仍 root-off 时读取正确的 GMU 寄存器（0x7e0xx/0x7e2xx），GMU 寄存器访问挂死 NoC；t35 读错误偏移所以无害。
+
+**0116（+26）**：把 GCC 0x52004 bit16 + GPUCC RCG（ROOT_EN/CFG=0x602/UPDATE/清 force）从 stage 6 提前到 stage 2，在使能 cx_gmu 与任何 GMU 读取之前；stage 6 保留幂等重复；新增 `stage2: gmu clock` 日志。
+
+**工程**：0116 对 0115 终态 `git apply --check` 通过。
