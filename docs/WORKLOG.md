@@ -683,3 +683,15 @@ Stage Summary:
 **依据**：gpucc-sm8150.c 的 gmu_clk_src freq table（200 MHz = GPLL0_DIV 1.5）+ clk-rcg2.c 的 force-enable/configure 语义（CMD_ROOT_EN bit1、ROOT_OFF bit31、CFG src [10:8]、div [4:0]、mode [13:12]）。
 
 **工程**：0114 对 0113 终态 `git apply --check` 通过。
+
+---
+
+## Task 47 (r46/t36) — a640 GMU 寄存器表纠正（2026-10-25）
+
+**根因（决定性）**：此前 GMU 寄存器偏移来自 HackiOS（a660），a640 完全不同。厂商 `a6xx_reg.h`（字索引 ×4）：ITCM_START 0x1B400→0x6d000、DTCM_START 0x1C400→0x71000、SYSRESET 0x1F800→0x7e000、BOOT_CONFIG 0x1F801→0x7e004、FW_INIT_RESULT 0x1F81C→0x7e070、CM3_CFG 0x1F82D→0x7e0b4、HFI_CTRL_STATUS 0x1F980→0x7e600、QTBL_INFO/ADDR 0x7e610/0x7e614、SFR 0x7e608、RPMH_CTRL 0x7e3a0、AO_COUNTER 0x7e220、AHB_FENCE_RANGE_0 0x8ec44。GMU VMA：ITCM 0x0(16K)、ICACHE 0x4000(240K)、DTCM 0x40000(16K)、DCACHE 0x44000(240K)、NONCACHED 0x60000000。厂商启动等待 `FW_INIT_RESULT==0xBABEFACE`，load_mode=TCM_BOOT=2，HFI_SFR_ADDR=压缩后的 chipid（a640→0x06040000）。
+
+**0115（+41/-49）**：全部 GMU 常量换 a640；TCM 窗口/范围修正（DTCM 0x40000..0x43fff）；固件块分类按 gmu_vma（ICACHE 0x4000 与 DCACHE 0x57000 经 SMMU，DTCM 0x40000/0x43fe0 走窗口）；启动序列按厂商 a6xx_gmu_configure（含 WFI_CONFIG=0）；轮询 0xBABEFACE。
+
+**教训**：跨 SoC 移植时 GMU/TCM 映射不能照抄；必须从目标 SoC 的 a6xx_reg.h/gmu_vma 取偏移。此前 t33~t35 的"CM3 不启动"全部由此解释。
+
+**工程**：0115 对 0114 终态 `git apply --check` 通过。
