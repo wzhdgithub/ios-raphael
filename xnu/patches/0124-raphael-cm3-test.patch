@@ -1,0 +1,37 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -937,6 +937,23 @@
+                 }
+         }
+ 
++        /* gputest: replace the firmware entry with a 20-byte CM3 program that
++         * writes 0xDEADBEEF to DTCM[0] and loops.  If the host later reads that
++         * word back through the DTCM window, the CM3 core itself executes; if
++         * not, the core/clock/reset path is the problem, not the firmware. */
++        int gputest = 0;
++        (void)PE_parse_boot_argn("gputest", &gputest, sizeof(gputest));
++        if (gputest) {
++                static const uint32_t test_prog[8] = {
++                        0x00043f80u, 0x00000009u, 0x49044803u, 0xE7FE6001u,
++                        0xBF00BF00u, 0xBF00BF00u, 0x00040000u, 0xDEADBEEFu };
++                for (int i = 0; i < 8; i++) {
++                        gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, test_prog[i]);
++                }
++                gpu_wr(gmu5, GMU_DTCM_WINDOW, 0);
++                printf("SWEET GPU: stage5: gputest armed (ITCM entry -> DTCM 0xdeadbeef)\n");
++        }
++
+         /* The log and the HFI page the firmware asks for at run time. */
+         vm_offset_t log_mem = 0, hfi_mem = 0;
+         uint32_t log_sz = 0, hfi_sz = 0;
+@@ -1224,6 +1241,10 @@
+         uint32_t cm3cfg_after = gpu_rd(gmu5, GMU_CM3_CFG);
+         uint32_t ao_intr = gpu_rd(gmu5, GMU_CSR(0x8ec14u));
+         uint32_t ahb_fence = gpu_rd(gmu5, GMU_CSR(0x8ec4cu));
++        if (gputest) {
++                printf("SWEET GPU: stage6: gputest dtcm0=%#x (want 0xdeadbeef)\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW));
++        }
+         uint32_t log_wptr = gpu_rd(gmu5, GMU_PWR_COL_CP_RESP);
+         uint32_t smmu_fsr = gpu_rd(sm, cb + SMMU_CB_FSR);
+         gpu_from_memory(log_mem, log_sz);

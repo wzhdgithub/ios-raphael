@@ -797,3 +797,15 @@ Stage Summary:
 **0123（+95）**：在 stage 6 写入完整 RPMh 微码（RSC 5 字 + PDC seq 5 字 + TCS1/TCS3 + PDC enable），默认不唤醒 RSC，打印回读。
 
 **工程**：0123 对 0122 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 56 (r55/t45) — RPMh 微码就位但 CM3 仍静默；用 CM3 自检一分为二（2026-10-26）
+
+**t44（0123）**：`rpmh ucode loaded: rsc_status=0x1000000 seq0=0xa7a506a0 pdc_en=0x80000001 tcs1=0x7`——RSC/PDC 微码写入全部被接受；配置写与释放正常，但 `fw_init=0`、`rpmh=0xf`。
+
+**t44r（repack gpursc=1）**：`rsc status=0`（ASLEEP=0，RSC 没睡）、`rscc_ack=0`，系统不挂，`fw_init=0` 不变 → RSC 唤醒不是阻塞点，且 t42 的挂死与 RSC 无关（当时还有错误的 S2CR=0x100）。
+
+**0124（+20）**：`gputest` 用 20 字节 CM3 程序（DTCM[0]=0xDEADBEEF 后死循环）覆盖 ITCM 入口，释放后主机读 DTCM 窗口：0xdeadbeef = 核心执行，0 = 核心未执行。这是把“硬件路径”和“厂商固件”分开的最短路径。
+
+**工程**：0124 对 0123 终态 `patch -p1 --dry-run` 通过。

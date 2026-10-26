@@ -43,3 +43,21 @@ stage6: fw_init=0xbabeface        <- 目标
 fastboot boot raphael-t43-norsc-debug.img
 fastboot boot raphael-t42-ctx1-debug.img
 ```
+
+## 结果（2026-10-26 13:19 / 13:23）
+
+**t44（gpursc=0）**：ring 211,701 B / flush #92，系统健康。
+```
+stage6: rpmh ucode loaded: rsc_status=0x1000000 seq0=0xa7a506a0 pdc_en=0x80000001 tcs1=0x7
+stage6: GMU config registers written
+stage6: GMU configured (chip 0x6040000), releasing CM3
+stage6: fw_init=0 intr=0 hfi_ctrl=0 sptprac=0xc0 rpmh=0xf
+```
+微码写入全部被接受（回读与写入一致），但 CM3 仍不写 FW_INIT。
+
+**t44r（repack gpursc=1）**：`rsc status=0 rscc_ack=0` → **RSC 的 ASLEEP 位是 0（根本没睡）**，
+唤醒请求本就不需要，ack=0 是预期；系统没有挂死（222,619 B / flush #87），`fw_init=0` 不变。
+→ RSC 不是阻塞点；RPMh 微码已就位。
+
+**下一步**：t45/0124 的 `gputest` —— 用 20 字节的 CM3 测试程序（写 DTCM 0xDEADBEEF 后死循环）替换固件入口，
+主机读 DTCM 窗口即可判定“CM3 核心是否真的执行”，把问题一分为二。
