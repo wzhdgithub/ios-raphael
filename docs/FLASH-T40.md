@@ -60,3 +60,26 @@ fastboot boot raphael-t39-rebase-debug.img
 fastboot boot raphael-t38-gate-debug.img
 fastboot boot raphael-t12-gt9886-clean.img
 ```
+
+## 结果（2026-10-25 深夜，开机 ~6 分钟后拉取）
+
+ring：**total 860,633 B / flush #9027**，系统长时间健康运行。
+
+```
+stage5: smmu cb1@0x9000 ttbr=0x10001d7674000, smr5/s2cr5=0x100 sent
+stage5=OK fw=loaded tcm_wrong=0 ddr_blocks=2 CM3=HELD_IN_RESET
+stage6: GMU config registers written
+stage6: GMU configured (chip 0x6040000), releasing CM3
+stage6: gmu log wptr=0 smmu_fsr=0x400
+stage6: gmu log 00000000 00000000 00000000 00000000   (x4 行，全 0)
+stage6: fw_init=0 intr=0 hfi_ctrl=0 sptprac=0xc0 rpmh=0xf
+stage6: after release sysreset=0 boot_config=0x2 cm3_cfg=0x4052
+stage6=FAIL fw=did-not-start fw_init=0 (timeout)
+```
+
+**结论**：S2CR=0x100 已生效（不再是 bypass），但 GMU 的 CB1 记录了 **FSR=0x400 = TLBLKF（TLB lock fault）**，
+且固件日志全 0、FW_INIT 未写。即 CM3 已经开始取指，但在经 GMU SMMU 读取 ICACHE 代码（VMA 0x4000）
+时页表遍历失败。DTB 证实该 SMMU 是 **qcom,qsmmu-v500 + qcom,skip-init**（hypervisor/固件托管），
+上游对这类 SMMU 在 reset 路径要调用 **SCM SVC 0x15 CMD 0x03（SMMU_CONFIG_ERRATA1, CLIENT_ALL=2）**
+关闭 wait-for-safe，否则 TLB 会保持锁住（正是 TLBLKF）。另外 stage2 的 `rpmh_state=0xf` 说明 GMU 仍处于
+**RPMh slumber**，vendor 在启动 CM3 前会先唤醒 RSC。t41/0120 同时补这两步。

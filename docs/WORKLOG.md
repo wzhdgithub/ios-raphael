@@ -749,3 +749,15 @@ Stage Summary:
 **依据**：ARM SMMU-500 S2CR TYPE[1:0]/CBNDX[15:8]；上游 `a6xx_gmu.c` 的 fw_load/start 序列；HackiOS `redwood_adreno.c` step_gmu_start 对照；raphael DTB（gmu_kernel iommus = SID 5 mask 0x400，GMU reg size 0x30000）。
 
 **工程**：0119 对 0118 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 52 (r51/t41) — S2CR 已生效但 TLB 锁死：QSMMU safe-toggle + RSC 唤醒（2026-10-25）
+
+**t40（0119）实机结果**：ring 860,633 B / flush #9027，系统健康。`smmu cb1@0x9000 ... smr5/s2cr5=0x100 sent`；stage 5=OK；stage 6 配置写入、释放 CM3，但 `gmu log wptr=0`、日志页全 0、**`smmu_fsr=0x400`（TLBLKF）**、`fw_init=0`。
+
+**判读**：S2CR 修复已让 stream 5 走 context 1 翻译（不再是 bypass），CM3 已开始取指；失败点是 GMU SMMU 的页表遍历被 **TLB lock** 挡住。DTB 证实 `/soc/kgsl-smmu@0x02ca0000` = `qcom,qsmmu-v500` + `qcom,skip-init` + `qcom,use-3-lvl-tables`，GMU 的 iommus phandle 0x249 正指向它。上游 `arm-smmu-qcom.c` 对 QSMMU 在 reset 路径调用 `qcom_scm_qsmmu500_wait_safe_toggle(0)`（SVC 0x15 / CMD 0x03 / arg0=CLIENT_ALL=2 / arg1=0）关闭 wait-for-safe；否则 TLB 保持锁住，出现 TLBLKF。另：stage2 `rpmh_state=0xf` 表示 GMU 仍在 RPMh slumber，vendor `a6xx_rpmh_start` 会在启动 CM3 前唤醒 RSC。
+
+**0120（+40/-1）**：stage 5 在 SMMU 编程前调用 SCM safe-toggle；只读探测 TCU（0x2cc2000 八个寄存器）；stage 6 读取 GPU RSC 状态（GMU+0x23000 区）与 `GMU_RSCC_CONTROL_ACK`，若未 awake 则写 `RSCC_CONTROL_REQ=2`、轮询 ACK bit1、再清零；其余不变。
+
+**工程**：0120 对 0119 终态 `patch -p1 --dry-run` 通过。

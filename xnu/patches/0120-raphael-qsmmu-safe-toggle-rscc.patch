@@ -1,0 +1,60 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -289,6 +289,9 @@
+ #define GMU_AHB_FENCE_RANGE_0  GMU_CSR(0x8ec44u)
+ #define GMU_PWR_COL_CP_MSG     GMU_CSR(0x7e400u)
+ #define GMU_PWR_COL_CP_RESP    GMU_CSR(0x7e404u)
++#define GMU_RSCC_CONTROL_REQ   GMU_CSR(0x8ec1cu)   /* A6XX_GMU_RSCC_CONTROL_REQ  (word 0x9307) */
++#define GMU_RSCC_CONTROL_ACK   GMU_CSR(0x8ec20u)   /* A6XX_GMU_RSCC_CONTROL_ACK  (word 0x9308) */
++#define GMU_RSC_STATUS0        GMU_CSR(0x8d010u)   /* GPU RSC block at GMU+0x23000 (hwevent 0x2c8d050) */
+ #define GMU_HFI_SFR_ADDR       GMU_CSR(0x7e608u)
+ #define GMU_SYS_BUS_CONFIG     GMU_CSR(0x7d03cu)
+ #define GMU_ICACHE_CONFIG      GMU_CSR(0x7d000u)
+@@ -922,6 +925,23 @@
+             gpu_table_count, (unsigned long long)gpu_table_phys(root), tcm_words, tcm_wrong,
+             ddr_bytes, ddr_blocks);
+ 
++        /* QSMMU-v500: the firmware's wait-for-safe logic locks the TCU TLB until the
++         * OS disables it (Linux: qcom_scm_qsmmu500_wait_safe_toggle(0), SVC 0x15
++         * CMD 0x03 arg CLIENT_ALL).  A locked TLB is what FSR TLBLKF (0x400) on
++         * the GMU context looked like in t40. */
++        uint64_t safe_answer = 0;
++        int32_t safe_status = gpu_scm("to turn off the QSMMU wait-for-safe",
++            SCM_FAST | SCM_64 | SCM_SIP | SCM_CALL(0x15, 0x03), 2, 0x02, 0, 0, &safe_answer);
++        printf("SWEET GPU: stage5: qsmmu safe-toggle status=%d answer=%#llx\n", safe_status,
++            (unsigned long long)safe_answer);
++
++        vm_offset_t tcu = ml_io_map(0x02cc2000u, 0x20);
++        if (tcu) {
++                printf("SWEET GPU: stage5: tcu %08x %08x %08x %08x %08x %08x %08x %08x\n",
++                    gpu_rd(tcu, 0x0), gpu_rd(tcu, 0x4), gpu_rd(tcu, 0x8), gpu_rd(tcu, 0xc),
++                    gpu_rd(tcu, 0x10), gpu_rd(tcu, 0x14), gpu_rd(tcu, 0x18), gpu_rd(tcu, 0x1c));
++        }
++
+         /* Context 1 (the GMU's kernel context), programmed blindly: reads of these
+          * registers return garbage on this hypervisor (t29/t30/t31). Writes are what
+          * the vendor driver relies on. */
+@@ -995,6 +1015,23 @@
+                 gpu_wr(gbif6, GBIF_HALT, 0);
+         }
+ 
++        /* The GMU is in RPMh slumber (stage2 rpmh_state=0xf); hand its RPMh channel
++         * back to the RSC before the CM3 starts, as vendor a6xx_rpmh_start does. */
++        uint32_t rsc_status = gpu_rd(gmu5, GMU_RSC_STATUS0);
++        uint32_t rscc_ack = gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK);
++        printf("SWEET GPU: stage6: rsc status=%#x rscc_ack=%#x\n", rsc_status, rscc_ack);
++        if (!(rscc_ack & 2u)) {
++                gpu_wr(gmu5, GMU_RSCC_CONTROL_REQ, 2u);
++                for (int i = 0; i < 100 && !(gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK) & 2u); i++) {
++                        gpu_wait(1);
++                }
++                rscc_ack = gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK);
++                gpu_wr(gmu5, GMU_RSCC_CONTROL_REQ, 0);
++                printf("SWEET GPU: stage6: rsc wake requested ack=%#x\n", rscc_ack);
++        } else {
++                printf("SWEET GPU: stage6: rsc already awake\n");
++        }
++
+         printf("SWEET GPU: stage6: GMU registers in 11 s (flush window before the writes)\n");
+         gpu_wait(11000);
+         gpu_wr(gmu5, GMU_GENERAL_7, 1);
