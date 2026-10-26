@@ -854,3 +854,13 @@ Stage Summary:
 **分析**：t46–t48 的 S2CR 都指向 context 1（HackiOS 的约定）；raphael vendor kgsl 给 GMU 的可能 是第一个 context bank **CB0**。0128 把 context 号做成 `gpucb` boot-arg，参数化 CBAR/CBA2R/CB 基址/TTBR ASID/TLBIASID/S2CR.CBNDX；t49 镜像用 `gpucb=0` 直接验证 CB0。
 
 **工程**：0128 对 0127 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 61 (r60/t50) — 一次启动扫描 SMMU (CB×SMR) 组合（2026-10-26）
+
+**t49（0128）**：`gpucb=0`（CB0）仍 `gputest dtcm=deadbeef 11 0`；TCU 版本寄存器正常。CB 号由 arm-smmu 动态分配，逐个人工试代价太高。
+
+**0130（+70/-8）**：`gpuscan=1` 在 stage 6 循环 (CB 0–4) × (SMR 策略 0–2) 15 种组合：每次复位 CM3、重编程 SMMU、重写 ITCM/ICACHE 测试程序、清 DTCM、释放 CM3、读 DTCM[0..2] 并打印。另加 SGFSR/TBU_PWR/SYNC_INV/SAFE_WAIT/CB FSR/FAR/TBU 寄存器转储。
+
+**工程**：0130 对 0129 终态 `patch -p1 --dry-run` 通过。

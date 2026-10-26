@@ -1,0 +1,114 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -142,6 +142,15 @@
+ #define GMU_SPTPRAC_PWR_CLK_STATUS GMU_CSR(0x7e340u)
+ #define GMU_AO_COUNTER_L      GMU_CSR(0x7e220u)
+ 
++/* gputest: DTCM[0]=deadbeef, DTCM[1]=0x11, then blx to a routine placed at
++ * ICACHE 0x4100 that writes DTCM[2]=0xcafebeef. */
++static const uint32_t gputest_prog[11] = {
++        0x00043f80u, 0x00000009u, 0x4C064805u, 0x25116004u,
++        0x4B056045u, 0xE7FE4798u, 0xBF00BF00u, 0xBF00BF00u,
++        0x00040000u, 0xDEADBEEFu, 0x00004101u };
++static const uint32_t gputest_icache[5] = {
++        0x49034802u, 0xE7FE6101u, 0xBF00BF00u, 0x00040000u, 0xCAFEBEEFu };
++
+ static int gpu_sleep_chan;
+ 
+ static uint32_t
+@@ -952,17 +961,11 @@
+                 /* ITCM: DTCM[0]=0xdeadbeef; DTCM[1]=word read from ICACHE 0x7280
+                  * (0xbabeface in the firmware); then blx to a routine placed at
+                  * ICACHE 0x4100 which writes DTCM[2]=0xcafebeef. */
+-                static const uint32_t test_prog[11] = {
+-                        0x00043f80u, 0x00000009u, 0x4C064805u, 0x25116004u,
+-                        0x4B056045u, 0xE7FE4798u, 0xBF00BF00u, 0xBF00BF00u,
+-                        0x00040000u, 0xDEADBEEFu, 0x00004101u };
+-                static const uint32_t icache_prog[5] = {
+-                        0x49034802u, 0xE7FE6081u, 0xBF00BF00u, 0x00040000u, 0xCAFEBEEFu };
+                 for (int i = 0; i < 11; i++) {
+-                        gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, test_prog[i]);
++                        gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, gputest_prog[i]);
+                 }
+                 if (icache_mem) {
+-                        memcpy((void *)(icache_mem + 0x100), icache_prog, sizeof(icache_prog));
++                        memcpy((void *)(icache_mem + 0x100), gputest_icache, sizeof(gputest_icache));
+                         gpu_to_memory(icache_mem, 0x200);
+                 }
+                 gpu_wr(gmu5, GMU_DTCM_WINDOW, 0);
+@@ -1275,7 +1278,74 @@
+             gpu_rd(gmu5, GMU_AO_AHB_FENCE_CTRL), gpu_rd(gmu5, GMU_CSR(0x8ec4cu)));
+         gpu_wr(gmu5, GMU_CX_GMU_WFI_CONFIG, 0);
+         printf("SWEET GPU: stage6: GMU configured (chip %#x), releasing CM3\n", GMU_CHIPID);
+-        gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
++
++        int gpuscan = 0;
++        (void)PE_parse_boot_argn("gpuscan", &gpuscan, sizeof(gpuscan));
++        if (gpuscan && gputest) {
++                /* Try every (context bank 0-4) x (SMR strategy 0-2) in one boot:
++                 * hold the CM3, reprogram the SMMU, restart the ICACHE test and
++                 * read the three DTCM words back. */
++                for (uint32_t cbx = 0; cbx < 5; cbx++) {
++                        for (int mode = 0; mode < 3; mode++) {
++                                gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);
++                                gpu_wait(2);
++                                uint64_t root64 = (uint64_t)gpu_table_phys(root) | (uint64_t)cbx << 48;
++                                uint32_t cbb = (sm_pages + cbx) * sm_page;
++                                gpu_wr(sm, sm_page + 4u * cbx, SMMU_CBAR_STAGE_1);
++                                gpu_wr(sm, sm_page + SMMU_CBA2R(cbx), SMMU_CBA2R_64_BIT);
++                                gpu_wr(sm, cbb + SMMU_CB_SCTLR, 0);
++                                gpu_wr(sm, cbb + SMMU_CB_TCR2, SMMU_TCR2);
++                                gpu_wr(sm, cbb + SMMU_CB_TCR, SMMU_TCR_39_BITS);
++                                gpu_wr(sm, cbb + SMMU_CB_TTBR0, (uint32_t)root64);
++                                gpu_wr(sm, cbb + SMMU_CB_TTBR0 + 4, (uint32_t)(root64 >> 32));
++                                gpu_wr(sm, cbb + SMMU_CB_TTBR1, 0);
++                                gpu_wr(sm, cbb + SMMU_CB_TTBR1 + 4, 0);
++                                gpu_wr(sm, cbb + SMMU_CB_MAIR0, SMMU_MAIR0);
++                                gpu_wr(sm, cbb + SMMU_CB_MAIR1, 0);
++                                gpu_wr(sm, cbb + SMMU_CB_FSR, SMMU_FSR_ALL);
++                                gpu_wr(sm, cbb + SMMU_CB_TLBIASID, cbx);
++                                gpu_wr(sm, cbb + SMMU_CB_TLBSYNC, 1);
++                                gpu_wait(1);
++                                gpu_wr(sm, cbb + SMMU_CB_SCTLR, SMMU_SCTLR_ON);
++                                for (uint32_t i = 0; i < 6; i++) {
++                                        uint32_t sid;
++                                        if (mode == 0) {
++                                                if (i != 1 && i != 4 && i != 5) {
++                                                        gpu_wr(sm, SMMU_SMR(i), 0);
++                                                        gpu_wr(sm, SMMU_S2CR(i), 0);
++                                                        continue;
++                                                }
++                                                sid = 5;
++                                        } else if (mode == 1) {
++                                                sid = 5;
++                                        } else {
++                                                sid = (i & 1) ? 4u : 5u;
++                                        }
++                                        gpu_wr(sm, SMMU_SMR(i), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | sid);
++                                        gpu_wr(sm, SMMU_S2CR(i), cbx);
++                                }
++                                for (int i = 0; i < 11; i++) {
++                                        gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, gputest_prog[i]);
++                                }
++                                if (icache_mem) {
++                                        memcpy((void *)(icache_mem + 0x100), gputest_icache, sizeof(gputest_icache));
++                                        gpu_to_memory(icache_mem, 0x200);
++                                }
++                                gpu_wr(gmu5, GMU_DTCM_WINDOW, 0);
++                                gpu_wr(gmu5, GMU_DTCM_WINDOW + 4, 0);
++                                gpu_wr(gmu5, GMU_DTCM_WINDOW + 8, 0);
++                                gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
++                                gpu_wait(20);
++                                printf("SWEET GPU: scan cb=%u smr=%d -> %#x %#x %#x\n", cbx, mode,
++                                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8));
++                        }
++                }
++                gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);
++                printf("SWEET GPU: scan done (CM3 held in reset)\n");
++        } else {
++                gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
++        }
+ 
+         uint32_t fw_result = 0;
+         for (int i = 0; i < 2000; i++) {

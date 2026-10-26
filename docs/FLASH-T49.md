@@ -31,3 +31,17 @@ stage6: gputest dtcm=0xdeadbeef 0x11 0xcafebeef   <- CB0 正确
 fastboot boot raphael-t48-fetch-debug.img
 fastboot boot raphael-t47-fence-debug.img
 ```
+
+## 结果（2026-10-26 23:10）
+
+```
+stage5: using smmu context 0 (cb0@0x8000)
+stage5: smr1=0x84000005 s2cr1=0 smr5=0x84000005 s2cr5=0 (want ... s2cr=0)
+stage6: gputest dtcm=0xdeadbeef 0x11 0
+```
+
+CB0 同样不行：ICACHE 取指仍然失败。TCU 版本寄存器正常（0x18=0x01000000），不是 TCU 没电。
+→ VMware 的 CB 号（arm-smmu 动态分配）未知，逐个人工试太慢。
+
+t50/0130 改为**一次启动内扫描**：(CB 0–4) × (SMR 策略 0–2) 共 15 种组合，每次复位 CM3、
+重编程 SMMU、重启 ICACHE 测试并读回 DTCM，矩阵结果一次落盘。
