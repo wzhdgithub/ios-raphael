@@ -773,3 +773,15 @@ Stage Summary:
 **0121（+26/-10）**：S2CR 改回 `1`；entry 1 与 entry 5 都写 SMR/S2CR；TLBSYNC 后轮询 TLBSTATUS；打印 entry1/5 回读；保留 QSMMU safe-toggle、RSC 唤醒、TCU 探测、GMU 日志/FSR 转储。
 
 **工程**：0121 对 0120 终态 `patch -p1 --dry-run` 通过。0120 已编译但未实机，直接由 0121 取代。
+
+---
+
+## Task 54 (r53/t43) — t42 证实 S2CR 正确，但 RSC 唤醒把系统带死；0122 默认关闭（2026-10-26）
+
+**t42（0121）实机**：`qsmmu safe-toggle status=0`（SCM 可用）；`smr1=0x84000005 s2cr1=0x1 smr5=0x84000005 s2cr5=0x1`，回读与写入完全一致，`tlbstatus=0`——**S2CR 位域与流表项修复确认生效**，hypervisor 接受 entry 1/5 的写入，GMU stream 5 走 context 1。但 ring 只有 93,442 B / flush #20，最后一行是 `stage6: GMU registers in 11 s`：系统在 11 秒窗口内死亡，配置写与 CM3 释放都没执行。窗口前唯一新动作是 **RSCC_CONTROL_REQ=2 唤醒（ack=0）**；vendor 是在 `a6xx_gmu_rpmh_init` 配好 PDC 序列后才唤醒 RSC，我们跳过了 PDC。
+
+**0122（+55/-31）**：`gpursc` 默认 0（跳过 RSC 唤醒，需要时 repack 打开）；`gpusafe` 可关；stage 6 配置写分三组，每组后 1.5 s 落盘窗口；其余保留。
+
+**教训**：不要在没有 PDC 序列的情况下盲写 RSCC_CONTROL_REQ；QSMMU/RSCC 的任何唤醒动作都要先有 vendor 的 PDC 配置。
+
+**工程**：0122 对 0121 终态 `patch -p1 --dry-run` 通过。

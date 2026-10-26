@@ -1,0 +1,93 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -929,11 +929,17 @@
+          * OS disables it (Linux: qcom_scm_qsmmu500_wait_safe_toggle(0), SVC 0x15
+          * CMD 0x03 arg CLIENT_ALL).  A locked TLB is what FSR TLBLKF (0x400) on
+          * the GMU context looked like in t40. */
+-        uint64_t safe_answer = 0;
+-        int32_t safe_status = gpu_scm("to turn off the QSMMU wait-for-safe",
+-            SCM_FAST | SCM_64 | SCM_SIP | SCM_CALL(0x15, 0x03), 2, 0x02, 0, 0, &safe_answer);
+-        printf("SWEET GPU: stage5: qsmmu safe-toggle status=%d answer=%#llx\n", safe_status,
+-            (unsigned long long)safe_answer);
++        int gpusafe = 1;
++        (void)PE_parse_boot_argn("gpusafe", &gpusafe, sizeof(gpusafe));
++        if (gpusafe) {
++                uint64_t safe_answer = 0;
++                int32_t safe_status = gpu_scm("to turn off the QSMMU wait-for-safe",
++                    SCM_FAST | SCM_64 | SCM_SIP | SCM_CALL(0x15, 0x03), 2, 0x02, 0, 0, &safe_answer);
++                printf("SWEET GPU: stage5: qsmmu safe-toggle status=%d answer=%#llx\n", safe_status,
++                    (unsigned long long)safe_answer);
++        } else {
++                printf("SWEET GPU: stage5: qsmmu safe-toggle skipped (gpusafe=0)\n");
++        }
+ 
+         vm_offset_t tcu = ml_io_map(0x02cc2000u, 0x20);
+         if (tcu) {
+@@ -1027,21 +1033,28 @@
+                 gpu_wr(gbif6, GBIF_HALT, 0);
+         }
+ 
+-        /* The GMU is in RPMh slumber (stage2 rpmh_state=0xf); hand its RPMh channel
+-         * back to the RSC before the CM3 starts, as vendor a6xx_rpmh_start does. */
+-        uint32_t rsc_status = gpu_rd(gmu5, GMU_RSC_STATUS0);
+-        uint32_t rscc_ack = gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK);
+-        printf("SWEET GPU: stage6: rsc status=%#x rscc_ack=%#x\n", rsc_status, rscc_ack);
+-        if (!(rscc_ack & 2u)) {
+-                gpu_wr(gmu5, GMU_RSCC_CONTROL_REQ, 2u);
+-                for (int i = 0; i < 100 && !(gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK) & 2u); i++) {
+-                        gpu_wait(1);
++        /* The GMU is in RPMh slumber (stage2 rpmh_state=0xf).  t42 tried the
++         * vendor's RSCC_CONTROL_REQ=2 wake here and the system died inside the
++         * next 11 s window (ack never came), so it is off unless gpursc=1. */
++        int gpursc = 0;
++        (void)PE_parse_boot_argn("gpursc", &gpursc, sizeof(gpursc));
++        if (gpursc) {
++                uint32_t rsc_status = gpu_rd(gmu5, GMU_RSC_STATUS0);
++                uint32_t rscc_ack = gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK);
++                printf("SWEET GPU: stage6: rsc status=%#x rscc_ack=%#x\n", rsc_status, rscc_ack);
++                if (!(rscc_ack & 2u)) {
++                        gpu_wr(gmu5, GMU_RSCC_CONTROL_REQ, 2u);
++                        for (int i = 0; i < 100 && !(gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK) & 2u); i++) {
++                                gpu_wait(1);
++                        }
++                        rscc_ack = gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK);
++                        gpu_wr(gmu5, GMU_RSCC_CONTROL_REQ, 0);
++                        printf("SWEET GPU: stage6: rsc wake requested ack=%#x\n", rscc_ack);
++                } else {
++                        printf("SWEET GPU: stage6: rsc already awake\n");
+                 }
+-                rscc_ack = gpu_rd(gmu5, GMU_RSCC_CONTROL_ACK);
+-                gpu_wr(gmu5, GMU_RSCC_CONTROL_REQ, 0);
+-                printf("SWEET GPU: stage6: rsc wake requested ack=%#x\n", rscc_ack);
+         } else {
+-                printf("SWEET GPU: stage6: rsc already awake\n");
++                printf("SWEET GPU: stage6: rsc wake skipped (gpursc=0)\n");
+         }
+ 
+         printf("SWEET GPU: stage6: GMU registers in 11 s (flush window before the writes)\n");
+@@ -1051,6 +1064,8 @@
+         gpu_wr(gmu5, GMU_CM3_BOOT_CONFIG, 2);          /* TCM_BOOT */
+         gpu_wr(gmu5, GMU_HFI_QTBL_ADDR, GMU_HFI_ADDRESS);
+         gpu_wr(gmu5, GMU_HFI_QTBL_INFO, 1);
++        printf("SWEET GPU: stage6: config group 1 written (identity/HFI)\n");
++        gpu_wait(1500);
+         /* a640 (upstream a6xx): upper 0xa, lower 0xa0; HackiOS's a660 value
+          * 0x80a008a0 belongs to a different fence encoding. */
+         gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, 1u << 31 | 0xa << 18 | 0xa0);
+@@ -1058,6 +1073,8 @@
+         gpu_wr(gmu5, GMU_PWR_COL_CP_RESP, 0);   /* log write pointer, vendor zeroes it */
+         gpu_wr(gmu5, GMU_HFI_SFR_ADDR, GMU_CHIPID);
+         gpu_wr(gmu5, GMU_PWR_COL_CP_MSG, GMU_LOG_ADDRESS | (GMU_LOG_SIZE / 4096 - 1));
++        printf("SWEET GPU: stage6: config group 2 written (fence/CM3/log)\n");
++        gpu_wait(1500);
+         gpu_wr(gmu5, GMU_SYS_BUS_CONFIG, 1);
+         gpu_wr(gmu5, GMU_ICACHE_CONFIG, 1);
+         gpu_wr(gmu5, GMU_DCACHE_CONFIG, 1);
+@@ -1065,6 +1082,7 @@
+         gpu_wr(gmu5, GMU_RPMH_CTRL, GMU_RPMH_CTRL_ALL);
+         gpu_wr(gmu5, GMU_GMU2HOST_INTR_CLR, 0xffffffff);
+         printf("SWEET GPU: stage6: GMU config registers written\n");
++        gpu_wait(1500);
+ 
+         /* The GMU's own clock is still rooted off (gmu_rcgr reads 0x80000000).
+          * Bring it up the way gpucc-sm8150 does: open the GCC gpll0_div gate,

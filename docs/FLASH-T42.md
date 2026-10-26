@@ -55,3 +55,28 @@ fastboot boot raphael-t39-rebase-debug.img
 fastboot boot raphael-t38-gate-debug.img
 fastboot boot raphael-t12-gt9886-clean.img
 ```
+
+## 结果（2026-10-26 01:30，开 ~3.5 分钟后拉取）
+
+ring：**total 93,442 B / flush #20**，最后一行停在 `stage6: GMU registers in 11 s`。
+
+```
+stage5: qsmmu safe-toggle status=0 answer=0          <- SCM 调用成功
+stage5: tcu 00000000 00000000 00000000 00000000 01000000 00000000 01000000 00000000
+stage5: smmu cb1@0x9000 ttbr=0x100014983c000 tlbstatus=0
+stage5: smr1=0x84000005 s2cr1=0x1 smr5=0x84000005 s2cr5=0x1 (want ...)
+stage5=OK fw=loaded tcm_wrong=0 ddr_blocks=2 CM3=HELD_IN_RESET
+stage6: hfi table 210 words, 3 queues ...
+stage6: rsc status=0 rscc_ack=0
+stage6: rsc wake requested ack=0                     <- ACK 没来
+stage6: GMU registers in 11 s (flush window before the writes)   <- 之后系统死亡
+```
+
+**结论**：
+1. **S2CR/流表项修复完全正确**：SMR/S2CR 回读与写入一致（`0x84000005` / `0x1`），TLBSTATUS=0；
+   hypervisor 接受 entry 1 与 entry 5 的写入，GMU 的 stream 5 现在走 context 1。
+2. QSMMU safe-toggle SCM 调用成功（返回 0/0）。
+3. 系统死在 11 秒窗口内，**配置写和 CM3 释放都没执行到**；窗口前唯一的新动作是
+   **RSCC_CONTROL_REQ=2 唤醒请求（ack=0）**——极可能是它让 RSC/NoC 挂死（我们还没有
+   配置 PDC 序列，vendor 是在 `a6xx_gmu_rpmh_init` 配好 PDC 之后才唤醒 RSC 的）。
+4. t43/0122：RSC 唤醒改为 `gpursc=0` 默认关闭；配置写分三组并在每组后 1.5 s 落盘窗口。
