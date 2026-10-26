@@ -1,0 +1,65 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -887,6 +887,7 @@
+         gpu_wait(1);
+ 
+         uint32_t fw_at = 0, tcm_words = 0, tcm_wrong = 0, ddr_bytes = 0;
++        vm_offset_t icache_mem = 0;
+         int ddr_blocks = 0;
+         while (fw_at + 16 <= A640_GMU_FW_SIZE) {
+                 uint32_t hdr[4];
+@@ -929,6 +930,9 @@
+                                 printf("SWEET GPU: stage5=FAIL cannot place %#x bytes at %#x\n", size, address);
+                                 goto out;
+                         }
++                        if (address == 0x4000u) {
++                                icache_mem = mem;
++                        }
+                         ddr_bytes += size;
+                         ddr_blocks++;
+                         (void)rounded;
+@@ -944,14 +948,27 @@
+         int gputest = 0;
+         (void)PE_parse_boot_argn("gputest", &gputest, sizeof(gputest));
+         if (gputest) {
+-                static const uint32_t test_prog[8] = {
+-                        0x00043f80u, 0x00000009u, 0x49044803u, 0xE7FE6001u,
+-                        0xBF00BF00u, 0xBF00BF00u, 0x00040000u, 0xDEADBEEFu };
+-                for (int i = 0; i < 8; i++) {
++                /* ITCM: DTCM[0]=0xdeadbeef; DTCM[1]=word read from ICACHE 0x7280
++                 * (0xbabeface in the firmware); then blx to a routine placed at
++                 * ICACHE 0x4100 which writes DTCM[2]=0xcafebeef. */
++                static const uint32_t test_prog[14] = {
++                        0x00043f80u, 0x00000009u, 0x4C084807u, 0x49096004u,
++                        0x6042680Au, 0x47984B08u, 0xBF00E7FEu, 0xBF00BF00u,
++                        0xBF00BF00u, 0xBF00BF00u, 0x00040000u, 0xDEADBEEFu,
++                        0x00007280u, 0x00004101u };
++                static const uint32_t icache_prog[5] = {
++                        0x49034802u, 0xE7FE6081u, 0xBF00BF00u, 0x00040000u, 0xCAFEBEEFu };
++                for (int i = 0; i < 14; i++) {
+                         gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, test_prog[i]);
+                 }
++                if (icache_mem) {
++                        memcpy((void *)(icache_mem + 0x100), icache_prog, sizeof(icache_prog));
++                        gpu_to_memory(icache_mem, 0x200);
++                }
+                 gpu_wr(gmu5, GMU_DTCM_WINDOW, 0);
+-                printf("SWEET GPU: stage5: gputest armed (ITCM entry -> DTCM 0xdeadbeef)\n");
++                gpu_wr(gmu5, GMU_DTCM_WINDOW + 4, 0);
++                gpu_wr(gmu5, GMU_DTCM_WINDOW + 8, 0);
++                printf("SWEET GPU: stage5: gputest armed (icache_mem=%#lx)\n", (unsigned long)icache_mem);
+         }
+ 
+         /* The log and the HFI page the firmware asks for at run time. */
+@@ -1242,8 +1259,9 @@
+         uint32_t ao_intr = gpu_rd(gmu5, GMU_CSR(0x8ec14u));
+         uint32_t ahb_fence = gpu_rd(gmu5, GMU_CSR(0x8ec4cu));
+         if (gputest) {
+-                printf("SWEET GPU: stage6: gputest dtcm0=%#x (want 0xdeadbeef)\n",
+-                    gpu_rd(gmu5, GMU_DTCM_WINDOW));
++                printf("SWEET GPU: stage6: gputest dtcm=%#x %#x %#x (want deadbeef babeface cafebeef)\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8));
+         }
+         uint32_t log_wptr = gpu_rd(gmu5, GMU_PWR_COL_CP_RESP);
+         uint32_t smmu_fsr = gpu_rd(sm, cb + SMMU_CB_FSR);

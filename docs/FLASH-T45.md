@@ -41,3 +41,18 @@ fastboot boot raphael-t45-cm3test-debug.img          # gputest=1 已打包
 fastboot boot raphael-t44-rpmh-debug.img
 fastboot boot raphael-t43-norsc-debug.img
 ```
+
+## 结果（2026-10-26 16:07）
+
+ring 649,588 B / flush #2170，系统健康：
+
+```
+stage5: gputest armed
+stage6: GMU configured (chip 0x6040000), releasing CM3
+stage6: gputest dtcm0=0xdeadbeef (want 0xdeadbeef)
+```
+
+**结论：CM3 核心确实在执行**——时钟、复位、电源、ITCM/DTCM 写入与 DTCM 窗口读回全部正常。
+问题不在硬件路径，而在**厂商固件自身的启动**：它从 ITCM 启动后必然会访问 ICACHE 区
+（VMA 0x4000，经 GMU SMMU 的宿主内存；`0xBABEFACE` 的写入代码也在该区）。
+t46/0125 用“读 ICACHE 0x7280 + 跳转执行 ICACHE 0x4100”的测试把这一环单独验证。

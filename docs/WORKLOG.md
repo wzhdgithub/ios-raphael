@@ -809,3 +809,14 @@ Stage Summary:
 **0124（+20）**：`gputest` 用 20 字节 CM3 程序（DTCM[0]=0xDEADBEEF 后死循环）覆盖 ITCM 入口，释放后主机读 DTCM 窗口：0xdeadbeef = 核心执行，0 = 核心未执行。这是把“硬件路径”和“厂商固件”分开的最短路径。
 
 **工程**：0124 对 0123 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 57 (r56/t46) — CM3 核心确认执行；问题在固件启动，测 ICACHE 数据/取指（2026-10-26）
+
+**t45（0124）**：`gputest dtcm0=0xdeadbeef` —— 20 字节测试程序在 ITCM 运行并写 DTCM，主机读回一致。
+**CM3 时钟/复位/电源/TCM 全部正常**，厂商固件不写 FW_INIT 是固件自身启动路径的问题。
+
+**0125（+40）**：gputest 升级为三步：DTCM[0]=0xDEADBEEF（ITCM 执行）；DTCM[1]←从 ICACHE 0x7280 读的 word（固件里是 0xBABEFACE，测 SMMU 数据读）；blx 到 ICACHE 0x4100 的小程序写 DTCM[2]=0xCAFEBEEF（测 SMMU 取指）。宿主页写入并 clean 后释放 CM3。
+
+**工程**：0125 对 0124 终态 `patch -p1 --dry-run` 通过。
