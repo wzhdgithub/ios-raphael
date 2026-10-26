@@ -761,3 +761,15 @@ Stage Summary:
 **0120（+40/-1）**：stage 5 在 SMMU 编程前调用 SCM safe-toggle；只读探测 TCU（0x2cc2000 八个寄存器）；stage 6 读取 GPU RSC 状态（GMU+0x23000 区）与 `GMU_RSCC_CONTROL_ACK`，若未 awake 则写 `RSCC_CONTROL_REQ=2`、轮询 ACK bit1、再清零；其余不变。
 
 **工程**：0120 对 0119 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 53 (r52/t42) — S2CR 位域更正：context 在 [7:0]，GMU 流表项是 1（2026-10-26）
+
+**背景**：t40（0119）把 S2CR 从 `1u` 改成 `1u<<8`，理由是“1u 是 bypass”。复核 ARM `arm-smmu.h` 后确认这是错的：`S2CR.TYPE = GENMASK(17,16)`、`S2CR.CBNDX = GENMASK(7,0)`。HackiOS `hakios_adreno.c` 的 `space_on()` 直接写 `S2CR(match)=space->context`（GMU context=1）并以 `(s2cr & 0x300ff)==context` 校验。→ t39 的 `1u` 本来就是“context 1 + 翻译”；t40 的 `1u<<8` 把 GMU 指到了 context 0，CB1 FSR=0x400 不能作为 GMU 故障证据。
+
+**另一个关键差异**：HackiOS 的 `GMU_MATCH = 1`（流表项 1，entry 0 留给 3D 核），`GMU_STREAM = 5`、mask 0x400；我们的代码一直写 entry 5。结合 `qcom,skip-init`（hypervisor 托管流表），entry 索引很可能就是 t39 仍然失败的原因。
+
+**0121（+26/-10）**：S2CR 改回 `1`；entry 1 与 entry 5 都写 SMR/S2CR；TLBSYNC 后轮询 TLBSTATUS；打印 entry1/5 回读；保留 QSMMU safe-toggle、RSC 唤醒、TCU 探测、GMU 日志/FSR 转储。
+
+**工程**：0121 对 0120 终态 `patch -p1 --dry-run` 通过。0120 已编译但未实机，直接由 0121 取代。
