@@ -1,0 +1,53 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -301,6 +301,7 @@
+ #define GMU_RSC_OVERRIDE_START GMU_CSR(0x8d400u)   /* A6XX_RSCC_OVERRIDE_START_ADDR  (0x23500) */
+ #define GMU_RSC_SEQ_MEM_0      GMU_CSR(0x8d600u)   /* A6XX_RSCC_SEQ_MEM_0_DRV0       (0x23580) */
+ #define GMU_RSC_SEQ_BUSY       GMU_CSR(0x8d404u)   /* A6XX_RSCC_SEQ_BUSY_DRV0        (0x23501) */
++#define GMU_AO_AHB_FENCE_CTRL  GMU_CSR(0x8ec40u)   /* A6XX_GMU_AO_AHB_FENCE_CTRL     (0x23b10) */
+ /* PDC: cfg at 0xb290000, sequence at 0xb490000 (dt reg-names kgsl_gmu_pdc_cfg/seq);
+  * a6xx_reg.h offsets are words. */
+ #define PDC_CFG_PA             0x0b290000u
+@@ -1043,12 +1044,19 @@
+         gpu_wr(sm, SMMU_S2CR(1), 1u);
+         gpu_wr(sm, SMMU_SMR(5), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 5u);
+         gpu_wr(sm, SMMU_S2CR(5), 1u);
++        /* dt: gmu_user is stream 4 (mask 0x400); map it through context 1 too
++         * in case the CM3's data accesses use it instead of stream 5. */
++        gpu_wr(sm, SMMU_SMR(4), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 4u);
++        gpu_wr(sm, SMMU_S2CR(4), 1u);
+         printf("SWEET GPU: stage5: smmu cb1@%#x ttbr=%#llx tlbstatus=%#x\n", cb,
+             (unsigned long long)ttbr, tlbstatus);
+         printf("SWEET GPU: stage5: smr1=%#x s2cr1=%#x smr5=%#x s2cr5=%#x (want smr=%#x s2cr=%#x)\n",
+             gpu_rd(sm, SMMU_SMR(1)), gpu_rd(sm, SMMU_S2CR(1)),
+             gpu_rd(sm, SMMU_SMR(5)), gpu_rd(sm, SMMU_S2CR(5)),
+             SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 5u, 1u);
++        printf("SWEET GPU: stage5: smr4=%#x s2cr4=%#x (want smr=%#x s2cr=1)\n",
++            gpu_rd(sm, SMMU_SMR(4)), gpu_rd(sm, SMMU_S2CR(4)),
++            SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 4u);
+ 
+         printf("SWEET GPU: stage5=%s fw=%s tcm_wrong=%u ddr_blocks=%d CM3=HELD_IN_RESET (stage 6 releases)\n",
+             (tcm_wrong == 0 && ddr_blocks == 2) ? "OK" : "PARTIAL",
+@@ -1193,9 +1201,9 @@
+         gpu_wr(gmu5, GMU_HFI_QTBL_INFO, 1);
+         printf("SWEET GPU: stage6: config group 1 written (identity/HFI)\n");
+         gpu_wait(1500);
+-        /* a640 (upstream a6xx): upper 0xa, lower 0xa0; HackiOS's a660 value
+-         * 0x80a008a0 belongs to a different fence encoding. */
+-        gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, 1u << 31 | 0xa << 18 | 0xa0);
++        /* The raphael vendor driver's own GMU_FENCE_RANGE_MASK for a640 is
++         * 0x80a008a0 (upper 0xa<<2, lower 0x8a0) - not upstream's 0x802800a0. */
++        gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, 1u << 31 | (0xa << 2) << 18 | 0x8a0);
+         gpu_wr(gmu5, GMU_CM3_CFG, 0x4052);
+         gpu_wr(gmu5, GMU_PWR_COL_CP_RESP, 0);   /* log write pointer, vendor zeroes it */
+         gpu_wr(gmu5, GMU_HFI_SFR_ADDR, GMU_CHIPID);
+@@ -1241,6 +1249,9 @@
+                     gpu_rd(gpucc, GPUCC_GMU_RCGR), gpu_rd(gpucc, GPUCC_GMU_RCGR + 4));
+         }
+ 
++        gpu_wr(gmu5, GMU_AO_AHB_FENCE_CTRL, 0);   /* fence ALLOW mode */
++        printf("SWEET GPU: stage6: ahb_fence ctrl=%#x status=%#x\n",
++            gpu_rd(gmu5, GMU_AO_AHB_FENCE_CTRL), gpu_rd(gmu5, GMU_CSR(0x8ec4cu)));
+         gpu_wr(gmu5, GMU_CX_GMU_WFI_CONFIG, 0);
+         printf("SWEET GPU: stage6: GMU configured (chip %#x), releasing CM3\n", GMU_CHIPID);
+         gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);

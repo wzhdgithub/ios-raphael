@@ -30,3 +30,21 @@
 fastboot boot raphael-t45-cm3test-debug.img
 fastboot boot raphael-t44-rpmh-debug.img
 ```
+
+## 结果（2026-10-26 16:32）
+
+```
+stage5: gputest armed (icache_mem=0xfffffe546fc14000)
+stage6: gputest dtcm=0xdeadbeef 0 0 (want deadbeef babeface cafebeef)
+```
+
+**判读**：DTCM[0]=0xDEADBEEF → ITCM 执行正常；DTCM[1]=0 → **CM3 第一次访问 ICACHE 区
+（0x7280）就总线故障**，程序没走到 `blx`，所以 DTCM[2]=0。这就是厂商固件静默的根因。
+
+**两个明确偏差**：
+1. t42 起把 AHB fence 值改成了上游的 `0x802800a0`，而 **raphael vendor 驱动自己的
+   `GMU_FENCE_RANGE_MASK` 是 `0x80a008a0`**；
+2. GMU 在 DT 里有两个流：**gmu_user stream 4** 与 gmu_kernel stream 5，我们只映射了 5；
+   CM3 的数据访问可能走 4。
+
+t47/0126 恢复 vendor fence 值、映射 stream 4、并把 `AO_AHB_FENCE_CTRL` 置为 ALLOW(0)。

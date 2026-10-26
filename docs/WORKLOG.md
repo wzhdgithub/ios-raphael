@@ -820,3 +820,15 @@ Stage Summary:
 **0125（+40）**：gputest 升级为三步：DTCM[0]=0xDEADBEEF（ITCM 执行）；DTCM[1]←从 ICACHE 0x7280 读的 word（固件里是 0xBABEFACE，测 SMMU 数据读）；blx 到 ICACHE 0x4100 的小程序写 DTCM[2]=0xCAFEBEEF（测 SMMU 取指）。宿主页写入并 clean 后释放 CM3。
 
 **工程**：0125 对 0124 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 58 (r57/t47) — CM3 访问 ICACHE 总线故障；fence 值与 stream 4（2026-10-26）
+
+**t46（0125）**：`gputest dtcm=0xdeadbeef 0 0` —— ITCM 正常，但 CM3 从 ICACHE 0x7280 读数据即总线故障，未走到 blx。**厂商固件静默的根因锁定为 CM3 对 ICACHE 区（经 GMU SMMU）的访问失败**。
+
+**发现**：vendor `adreno_a6xx_gmu.c` 的 `GMU_FENCE_RANGE_MASK = 0x80a008a0`（含 `(0xa<<2)<<18`），与我们 t42 起用的上游值 `0x802800a0` 不同；DT 的 GMU 还有 **gmu_user stream 4**，此前只映射了 stream 5。
+
+**0126（+18）**：恢复 vendor fence 值；SMR/S2CR(4)=stream 4→context 1；写 `AO_AHB_FENCE_CTRL=0`（ALLOW）；保留 ICACHE gputest。
+
+**工程**：0126 对 0125 终态 `patch -p1 --dry-run` 通过。
