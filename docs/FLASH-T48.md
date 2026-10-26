@@ -29,3 +29,20 @@ blx 0x4101                ; 跳到 ICACHE 区的例程
 fastboot boot raphael-t47-fence-debug.img
 fastboot boot raphael-t46-icache-debug.img
 ```
+
+## 结果（2026-10-26 22:21）
+
+```
+stage6: gputest dtcm=0xdeadbeef 0x11 0 (want deadbeef babeface cafebeef)
+```
+
+- DTCM[0]=0xdeadbeef → ITCM 执行；
+- DTCM[1]=0x11 → 已到达 `blx`；
+- DTCM[2]=0 → **ICACHE 区（0x4100）的取指失败**。
+
+即：CM3 只能执行 ITCM，无法执行 ICACHE 区的代码——厂商固件的主代码就在 ICACHE（函数指针 0x71bd），
+所以它永远写不出 FW_INIT。
+
+**下一步假设**：GMU 用的 SMMU context 可能不是 **CB1**（HackiOS 用 1），而是 raphael vendor kgsl
+给 GMU 分配的第一个 context bank **CB0**。t49/0128 把 context 号做成 `gpucb` boot-arg，
+先用 `gpucb=0` 验证。

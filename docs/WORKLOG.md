@@ -844,3 +844,13 @@ Stage Summary:
 **0127（+6/-9）**：gputest 改为纯取指：DTCM[0]=0xDEADBEEF、DTCM[1]=0x11、`blx 0x4101`，ICACHE 例程写 DTCM[2]=0xCAFEBEEF。判读 `deadbeef 11 cafebeef` = 取指正常。
 
 **工程**：0127 对 0126 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 60 (r59/t49) — CM3 只能执行 ITCM，ICACHE 取指失败；试 CB0（2026-10-26）
+
+**t48（0127）**：`gputest dtcm=0xdeadbeef 0x11 0` —— 程序到达 `blx`，但 ICACHE 0x4100 的取指没有执行。**根因锁定：CM3 无法执行 ICACHE 区代码**（厂商固件主代码在 0x71bc）。
+
+**分析**：t46–t48 的 S2CR 都指向 context 1（HackiOS 的约定）；raphael vendor kgsl 给 GMU 的可能 是第一个 context bank **CB0**。0128 把 context 号做成 `gpucb` boot-arg，参数化 CBAR/CBA2R/CB 基址/TTBR ASID/TLBIASID/S2CR.CBNDX；t49 镜像用 `gpucb=0` 直接验证 CB0。
+
+**工程**：0128 对 0127 终态 `patch -p1 --dry-run` 通过。

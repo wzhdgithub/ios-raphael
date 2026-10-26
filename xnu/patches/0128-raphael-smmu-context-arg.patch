@@ -1,0 +1,59 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -1011,10 +1011,14 @@
+         /* Context 1 (the GMU's kernel context), programmed blindly: reads of these
+          * registers return garbage on this hypervisor (t29/t30/t31). Writes are what
+          * the vendor driver relies on. */
+-        uint32_t cb = (sm_pages + 1u) * sm_page;
+-        uint64_t ttbr = gpu_table_phys(root) | (uint64_t)1 << 48;
+-        gpu_wr(sm, sm_page + 4u * 1u, SMMU_CBAR_STAGE_1);
+-        gpu_wr(sm, sm_page + SMMU_CBA2R(1), SMMU_CBA2R_64_BIT);
++        int gpucb = 1;
++        (void)PE_parse_boot_argn("gpucb", &gpucb, sizeof(gpucb));
++        uint32_t cbndx = gpucb == 0 ? 0u : 1u;
++        uint32_t cb = (sm_pages + cbndx) * sm_page;
++        uint64_t ttbr = gpu_table_phys(root) | (uint64_t)cbndx << 48;
++        printf("SWEET GPU: stage5: using smmu context %u (cb%u@%#x)\n", cbndx, cbndx, cb);
++        gpu_wr(sm, sm_page + 4u * cbndx, SMMU_CBAR_STAGE_1);
++        gpu_wr(sm, sm_page + SMMU_CBA2R(cbndx), SMMU_CBA2R_64_BIT);
+         gpu_wr(sm, cb + SMMU_CB_SCTLR, 0);
+         gpu_wr(sm, cb + SMMU_CB_TCR2, SMMU_TCR2);
+         gpu_wr(sm, cb + SMMU_CB_TCR, SMMU_TCR_39_BITS);
+@@ -1025,7 +1029,7 @@
+         gpu_wr(sm, cb + SMMU_CB_MAIR0, SMMU_MAIR0);
+         gpu_wr(sm, cb + SMMU_CB_MAIR1, 0);
+         gpu_wr(sm, cb + SMMU_CB_FSR, SMMU_FSR_ALL);
+-        gpu_wr(sm, cb + SMMU_CB_TLBIASID, 1);
++        gpu_wr(sm, cb + SMMU_CB_TLBIASID, cbndx);
+         gpu_wr(sm, cb + SMMU_CB_TLBSYNC, 1);
+         for (int i = 0; i < 100 && (gpu_rd(sm, cb + SMMU_CB_TLBSTATUS) & 1u); i++) {
+                 gpu_wait(1);
+@@ -1039,22 +1043,22 @@
+          * stream-table entry 1, entry 0 being the 3D core; entry 5 is written
+          * too in case the hypervisor kept the vendor allocation. */
+         gpu_wr(sm, SMMU_SMR(1), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 5u);
+-        gpu_wr(sm, SMMU_S2CR(1), 1u);
++        gpu_wr(sm, SMMU_S2CR(1), cbndx);
+         gpu_wr(sm, SMMU_SMR(5), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 5u);
+-        gpu_wr(sm, SMMU_S2CR(5), 1u);
++        gpu_wr(sm, SMMU_S2CR(5), cbndx);
+         /* dt: gmu_user is stream 4 (mask 0x400); map it through context 1 too
+          * in case the CM3's data accesses use it instead of stream 5. */
+         gpu_wr(sm, SMMU_SMR(4), SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 4u);
+-        gpu_wr(sm, SMMU_S2CR(4), 1u);
++        gpu_wr(sm, SMMU_S2CR(4), cbndx);
+         printf("SWEET GPU: stage5: smmu cb1@%#x ttbr=%#llx tlbstatus=%#x\n", cb,
+             (unsigned long long)ttbr, tlbstatus);
+         printf("SWEET GPU: stage5: smr1=%#x s2cr1=%#x smr5=%#x s2cr5=%#x (want smr=%#x s2cr=%#x)\n",
+             gpu_rd(sm, SMMU_SMR(1)), gpu_rd(sm, SMMU_S2CR(1)),
+             gpu_rd(sm, SMMU_SMR(5)), gpu_rd(sm, SMMU_S2CR(5)),
+-            SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 5u, 1u);
+-        printf("SWEET GPU: stage5: smr4=%#x s2cr4=%#x (want smr=%#x s2cr=1)\n",
++            SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 5u, cbndx);
++        printf("SWEET GPU: stage5: smr4=%#x s2cr4=%#x (want smr=%#x s2cr=%#x)\n",
+             gpu_rd(sm, SMMU_SMR(4)), gpu_rd(sm, SMMU_S2CR(4)),
+-            SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 4u);
++            SMMU_SMR_VALID | SMMU_STREAM_MASK << 16 | 4u, cbndx);
+ 
+         printf("SWEET GPU: stage5=%s fw=%s tcm_wrong=%u ddr_blocks=%d CM3=HELD_IN_RESET (stage 6 releases)\n",
+             (tcm_wrong == 0 && ddr_blocks == 2) ? "OK" : "PARTIAL",
