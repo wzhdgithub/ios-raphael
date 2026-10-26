@@ -785,3 +785,15 @@ Stage Summary:
 **教训**：不要在没有 PDC 序列的情况下盲写 RSCC_CONTROL_REQ；QSMMU/RSCC 的任何唤醒动作都要先有 vendor 的 PDC 配置。
 
 **工程**：0122 对 0121 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 55 (r54/t44) — CM3 启动前缺的是 RPMh/PDC 微码（2026-10-26）
+
+**t43 实机**：`gpursc=0` 下系统健康（211,637 B / flush #89），三组配置写全部完成，CM3 释放后 `fw_init=0`、GMU 日志全 0，`smmu_fsr=0x400`。复核 `arm-smmu-regs.h`：`FSR_TLBLKF=bit6`，0x400 是 bit10，不在 `FSR_FAULT` 内 → **没有翻译故障**。bi_tcxo（`gpuclk=0`）变体同样 `fw_init=0`，且 RCG ROOT_OFF 清除未生效，不能据此排除时钟。
+
+**关键对照**：vendor `adreno_a6xx_gmu.c` 的 `a6xx_gmu_fw_start` 在 fw_load 之前调用 `_load_gmu_rpmh_ucode()`（RSC/PDC 序列 + TCS + PDC enable），冷启动时 `a6xx_rpmh_power_on_gpu()` 因 `GMU_RSCC_SLEEP_SEQ_DONE` 未置位而直接返回。我们之前只在 t42 盲目写过 `RSCC_CONTROL_REQ=2`（导致 t42 系统在 11 秒窗口内死亡），却从未加载微码。
+
+**0123（+95）**：在 stage 6 写入完整 RPMh 微码（RSC 5 字 + PDC seq 5 字 + TCS1/TCS3 + PDC enable），默认不唤醒 RSC，打印回读。
+
+**工程**：0123 对 0122 终态 `patch -p1 --dry-run` 通过。

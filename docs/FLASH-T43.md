@@ -54,3 +54,16 @@ grep -a "SWEET GPU" D:\K20iOS\sweet-log-t43.txt
 fastboot boot raphael-t42-ctx1-debug.img
 fastboot boot raphael-t39-rebase-debug.img
 ```
+
+## 结果（2026-10-26 02:00 前后）
+
+- 正式 t43（`gpursc=0`）：ring 211,637 B / flush #89，**系统健康**；`rsc wake skipped`；
+  config group 1/2/3 全部写出；CM3 释放后 `fw_init=0`、GMU 日志仍全 0。
+- 补充实验（repack `gpuclk=0`，bi_tcxo 19.2 MHz）：同样 `fw_init=0`；且 0106 的 ROOT_OFF 清除
+  本身没生效（`gmu_rcgr` 仍 0x80000000），所以这个实验不构成“时钟不是问题”的反证。
+- **FSR 纠正**：vendor `arm-smmu-regs.h` 里 `FSR_TLBLKF = bit6`，而 0x400 是 **bit10**，
+  不在 `FSR_FAULT` 掩码内（bits 1–8, 30–31）。→ CB1 并没有记录翻译故障，SMMU 路径是好的。
+- **根因线索（vendor `adreno_a6xx_gmu.c`）**：`a6xx_gmu_fw_start` 在加载 GMU 固件前先调用
+  `_load_gmu_rpmh_ucode()`（RSC 5 字序列 + PDC 5 字序列 + TCS1/TCS3 + PDC enable），
+  冷启动时 `a6xx_rpmh_power_on_gpu()` 因 `GMU_RSCC_SLEEP_SEQ_DONE` 未置位而**直接返回**。
+  我们此前既没加载 ucode，又盲目做了 RSC 唤醒——顺序完全反了。
