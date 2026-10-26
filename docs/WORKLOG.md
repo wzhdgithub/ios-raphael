@@ -832,3 +832,15 @@ Stage Summary:
 **0126（+18）**：恢复 vendor fence 值；SMR/S2CR(4)=stream 4→context 1；写 `AO_AHB_FENCE_CTRL=0`（ALLOW）；保留 ICACHE gputest。
 
 **工程**：0126 对 0125 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 59 (r58/t48) — fence/stream4 被排除；改为纯取指测试（2026-10-26）
+
+**t47（0126）**：恢复 vendor fence 值 `0x80a008a0`、映射 gmu_user stream 4、写 `AO_AHB_FENCE_CTRL=0`，结果仍是 `gputest dtcm=0xdeadbeef 0 0` → **fence 与 stream 4 都不是原因**。
+
+**分析**：固件 ITCM 0x1f98 存有函数指针 0x71bd（ICACHE 0x71bc 的代码），说明 ICACHE 执行是必需的；但 t46/t47 用 LDR 数据读 0x7280，若该窗口只允许取指则会误报。
+
+**0127（+6/-9）**：gputest 改为纯取指：DTCM[0]=0xDEADBEEF、DTCM[1]=0x11、`blx 0x4101`，ICACHE 例程写 DTCM[2]=0xCAFEBEEF。判读 `deadbeef 11 cafebeef` = 取指正常。
+
+**工程**：0127 对 0126 终态 `patch -p1 --dry-run` 通过。

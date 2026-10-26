@@ -1,0 +1,30 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -952,14 +952,13 @@
+                 /* ITCM: DTCM[0]=0xdeadbeef; DTCM[1]=word read from ICACHE 0x7280
+                  * (0xbabeface in the firmware); then blx to a routine placed at
+                  * ICACHE 0x4100 which writes DTCM[2]=0xcafebeef. */
+-                static const uint32_t test_prog[14] = {
+-                        0x00043f80u, 0x00000009u, 0x4C084807u, 0x49096004u,
+-                        0x6042680Au, 0x47984B08u, 0xBF00E7FEu, 0xBF00BF00u,
+-                        0xBF00BF00u, 0xBF00BF00u, 0x00040000u, 0xDEADBEEFu,
+-                        0x00007280u, 0x00004101u };
++                static const uint32_t test_prog[11] = {
++                        0x00043f80u, 0x00000009u, 0x4C064805u, 0x25116004u,
++                        0x4B056045u, 0xE7FE4798u, 0xBF00BF00u, 0xBF00BF00u,
++                        0x00040000u, 0xDEADBEEFu, 0x00004101u };
+                 static const uint32_t icache_prog[5] = {
+                         0x49034802u, 0xE7FE6081u, 0xBF00BF00u, 0x00040000u, 0xCAFEBEEFu };
+-                for (int i = 0; i < 14; i++) {
++                for (int i = 0; i < 11; i++) {
+                         gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, test_prog[i]);
+                 }
+                 if (icache_mem) {
+@@ -967,7 +966,6 @@
+                         gpu_to_memory(icache_mem, 0x200);
+                 }
+                 gpu_wr(gmu5, GMU_DTCM_WINDOW, 0);
+-                gpu_wr(gmu5, GMU_DTCM_WINDOW + 4, 0);
+                 gpu_wr(gmu5, GMU_DTCM_WINDOW + 8, 0);
+                 printf("SWEET GPU: stage5: gputest armed (icache_mem=%#lx)\n", (unsigned long)icache_mem);
+         }
