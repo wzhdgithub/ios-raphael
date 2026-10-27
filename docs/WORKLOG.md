@@ -965,3 +965,18 @@ Stage Summary:
 - 判读：bit2=1 → 根因确认；resume 后 B 读到 feedface → 翻译通，固件有望 0xBABEFACE。
 - 工程：0135 与整系列重放逐字节一致；push fork 自动触发唯一 run。
 
+---
+
+## Task 67 (r66/t56 方向) — t55 判读：BYPASS 是哑响应；准备 ns 别名 + DTB 低地址 probe + 无效 TTBR walk（2026-10-27）
+
+**t55（0135）实机**（19:32 boot，log 243,099 B / flush #168）：
+- `impl_def1=0`（halt_req=0 idle=0），halt→resume 环后仍 0 → TCU-halt 假设未证实（寄存器可能被 hyp 屏蔽），且 resume 未修复翻译；
+- A 映射（BYPASS）四个目标 **全部 0xDEADBEEF**，包括 GMU 自己的 CM3_CFG（AP 读 0x4052）→ t54 的"BYPASS 完成"是哑响应/毒值；
+- B/C/D 与 t54 相同全挂、sgfsr=0；GX 上电成功但 A2/B2 不变；fw_init=0。
+
+**t56（0136）计划**：
+1. 读 SMMU 非安全别名 0x400/0x410/0x448 对比 0x0/0x10/0x48；nsCR0.CLIENTPD=1 则清位；
+2. BYPASS 探针改读 `PE_state.deviceTreeHead` 的物理地址（FDT 魔数 0xEDFE0DD0，低地址），保留寄存器目标作对照；
+3. 无效 TTBR0=0 + SCTLR on + S2CR translate 读 HFI：走表应报 TF（0x402），挂死 = TCU 不处理翻译；
+4. 有效翻译/写/fault、GX、固件释放、fw_init。
+

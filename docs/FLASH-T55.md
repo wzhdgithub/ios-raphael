@@ -46,3 +46,24 @@
 ```
 fastboot boot raphael-t54-ahb-path-debug.img
 ```
+
+## t55 结果（0135，19:32 boot，ring 243,099 B / flush #168）
+
+| 项 | 值 | 判读 |
+|---|---|---|
+| `impl_def1` | `0x0`（halt_req=0 idle=0），halt→resume 环后仍 0 | TCU-halt 假设**未证实**：寄存器可能被 hyp 屏蔽，且 resume 周期未修复翻译 |
+| A 映射（BYPASS） | `11 deadbeef deadbeef deadbeef deadbeef 22` | **四个目标全部 0xDEADBEEF**：GMU CM3_CFG、GPUCC CX_GDSCR、SMMU IDR0、SMMU IMPL_DEF1（AP 读 CM3_CFG=0x4052）→ t54 的"BYPASS 完成"是哑响应/毒值，不是真实 NoC 数据 |
+| B/C/D | 与 t54 相同（翻译/写/FAULT 全挂，sgfsr=0） | TCU 仍不回应 |
+| GX | 0x222001→0x8222000，A2/B2 不变 | GX 不是这条路的开关 |
+| 固件 | fw_init=0，stage6=FAIL | — |
+
+**新结论**：BYPASS 的"完成"不可信（0xDEADBEEF 哑值）。下一步要区分"GMU AHB 主口根本没发出事务"与"DRAM 可达、只是寄存器块被 XPU 挡"。
+
+## t56 计划（0136）
+
+1. 读 SMMU 非安全别名 `0x400 nsCR0` / `0x410 nsACR` / `0x448 nsGFSR`，与安全视图 `0x0/0x10/0x48` 对比；`nsCR0.CLIENTPD=1` 则清位。
+2. BYPASS 探针改读**低物理地址**：`PE_state.deviceTreeHead` 的 PA（FDT 魔数，小端 0xEDFE0DD0），保留 CM3_CFG/GPUCC/IDR0/IMPL_DEF1 作对照。
+3. **无效 TTBR0=0** + SCTLR on + S2CR=translate 读 HFI：TCU 真走表应快速报 TF（FSR 0x402）；仍挂 = TCU 不处理翻译请求。
+4. 有效翻译/写/FAULT、GX、固件释放、fw_init。
+
+判读：DTB 读到 0xEDFE0DD0 → GMU AHB/DRAM 通，0xDEADBEEF 是寄存器块被挡（XPU），主攻 SMMU 翻译/TCU；DTB 也是 0xDEADBEEF → GMU AHB 主口未真正发出事务，主攻 AHB 端口时钟/CNOC bus vote/XPU。
