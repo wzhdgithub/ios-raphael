@@ -1037,3 +1037,13 @@ Stage Summary:
 **0139（t59）**：把上述 raphael 厂测值搬进我们驱动——cmd_db 解析 BCM 地址（mx/cx/xo.lvl）替换硬编码、`gpu_smmu_cfg` 写 CB ACTLR=0x303、HFI_SFR_ADDR=0x06040100、fence=0x80A008A0；保留 B0/B/C/E/D 与固件释放判别。
 - 后续路线：本轮验证后，按计划移植其完整内核驱动 + IOKit 服务，并以其实测过的 Mesa/EAGL 方案构建 GLES 用户态。
 
+---
+
+## Task 72 (r70/t60) — 移植 HeliumStudio raphael 驱动（构建集成 spike）（2026-10-28）
+
+**t59 判读**：cmd_db 返回的 BCM 地址（0x30010/0x30000/0x30090）与我们 t44 的硬编码一致；CB ACTLR=0x303 写入成功但无变化；fence 三值（0x802800A0/0/0x80A008A0）全部挂死；B0 仍挂；RBBM GBIF 0/0（仅 CX ack=0x3）；fw_init=0。厂测值全部排除，转完整移植。
+
+**0140（t60）**：新文件 `bsd/dev/hakios.adreno.c`（4,250 行）+ 移植 shim（is_raphael=true、image_file 返回内嵌 a640_gmu.bin、sleep_us/ms、loader/display/IOKit stubs），`bsd/conf/files` 接入（上下文与 0103 相同），`sweet_gpu.c` 增加 `hkadreno=1` 钩子调用 `hakios_adreno_init()`。cmdline 用 `adreno=15 adreno_pause=0 adreno_skip=0x1c00` 只跑到 GMU 启动（step 15）。
+- 判读：出现 `THE GMU'S FIRMWARE RUNS` 即其 raphael 启动路径在本内核成立；失败则按 step 13/14 日志找差异。
+- 工程：0140 的 sweet_gpu.c 与新文件重放校验通过；conf/files hunk 上下文与 0103 一致（CI 验证）。
+
