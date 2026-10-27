@@ -980,3 +980,19 @@ Stage Summary:
 3. 无效 TTBR0=0 + SCTLR on + S2CR translate 读 HFI：走表应报 TF（0x402），挂死 = TCU 不处理翻译；
 4. 有效翻译/写/fault、GX、固件释放、fw_init。
 
+---
+
+## Task 68 (r66/t56) — t55 判读（BYPASS 是哑响应）→ t56：SMMU 非安全视图 + DTB 低地址探针 + 无效 TTBR walk（2026-10-27）
+
+**t55（0135）实机**（19:32 boot，log 243,099 B / flush #168）：
+- `impl_def1=0`（halt_req=0 idle=0），halt→resume 环后仍 0 → TCU-halt 未证实，resume 未修复翻译；
+- A BYPASS 四目标全部 0xDEADBEEF（GMU CM3_CFG / GPUCC / SMMU IDR0 / SMMU IMPL_DEF1），连 AP 读为 0x4052 的 CM3_CFG 也是 → BYPASS 的"完成"是哑响应；
+- B/C/D 全挂、sgfsr=0；GX 上电成功但 A2/B2 不变；fw_init=0。
+
+**0136（t56）**：
+1. 读 SMMU 安全/非安全两套全局视图（0x0/0x10/0x48 vs 0x400/0x410/0x448），nsCR0.CLIENTPD=1 时清位；
+2. BYPASS 探针改读 `PE_state.deviceTreeHead` 的物理地址（FDT 魔数 0xedfe0dd0），其余四个寄存器目标作对照（19 字程序，仿真验证）；
+3. 新增无效 TTBR0=0 walk 测试：FSR 0x402 = TCU 会走表；挂 = TCU 不处理翻译；
+4. 有效翻译/写/FAULT、GX、A2/B2、固件释放、fw_init。
+- 工程：`PE_state.deviceTreeHead` 已在 xnu-8796.141.3 的 pexpert.h 中确认；0136 与整系列重放逐字节一致。
+
