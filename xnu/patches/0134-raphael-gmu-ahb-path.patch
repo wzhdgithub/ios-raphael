@@ -1,0 +1,333 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -162,14 +162,16 @@
+         0x00043f80u, 0x00000009u, 0x49044803u, 0x4B046001u,
+         0x601C2411u, 0xBF00E7FEu, 0x60006F00u, 0xFEEDFACEu,
+         0x00040000u, 0x00000011u };
+-/* Bypass test: read two known MMIO words through the GMU's AHB port while
+- * every stream maps to SMMU bypass: SMMU IDR0 at 0x02ca0020 (0x4c017e06)
+- * and the GMU's own CM3_CFG at 0x02c7e0b4 (0x4052).  DTCM[1]/[2] receive
+- * them and DTCM[3]=0x11 marks that both loads completed. */
+-static const uint32_t gputest_bypass[10] = {
+-        0x00043f80u, 0x00000009u, 0x49064805u, 0x6042680Au,
+-        0x680A4905u, 0x25116082u, 0xE7FE60C5u, 0x00040000u,
+-        0x02ca0020u, 0x02c7e0b4u };
++/* t54 bypass probe: DTCM[0]=0x11 marker, DTCM[1] <- the word at the runtime
++ * literal in slot 9, DTCM[2]=0x22 marker, DTCM[3] <- SMMU IDR0 at 0x02ca0020
++ * (0x4c017e06).  The block points slot 9 at the HFI page's physical address
++ * (bypass -> DRAM, no page table) when it fits 32 bits, else at IDR0.  The
++ * loads are in order, so a hang pinpoints which one never completed; t53's
++ * bypass program never stored anything into DTCM. */
++static const uint32_t gputest_probe[11] = {
++        0x00043f80u, 0x00000009u, 0x23114805u, 0x49056003u,
++        0x6042680Au, 0x60832322u, 0x680A4903u, 0xE7FE60C2u,
++        0x00040000u, 0x02ca0020u, 0x02ca0020u };
+ 
+ static int gpu_sleep_chan;
+ 
+@@ -484,6 +486,56 @@
+         for (unsigned i = 0; i < gpu_table_count; i++) {
+                 gpu_to_memory((vm_offset_t)gpu_tables[i], PAGE_SIZE);
+         }
++}
++
++/* One SMMU test configuration: context 1 gets the real root table and all six
++ * stream-table entries get the same SMR/S2CR, so tests do not depend on
++ * guessing the GMU's stream id (t50/t51 matrix). */
++static void
++gpu_smmu_cfg(vm_offset_t sm, uint32_t sm_page, uint32_t cbb, uint64_t tcb,
++    uint32_t smr, uint32_t s2cr, bool sctlr_on)
++{
++        gpu_wr(sm, sm_page + 4u, SMMU_CBAR_STAGE_1);
++        gpu_wr(sm, sm_page + SMMU_CBA2R(1), SMMU_CBA2R_64_BIT);
++        gpu_wr(sm, cbb + SMMU_CB_SCTLR, 0);
++        gpu_wr(sm, cbb + SMMU_CB_TCR2, SMMU_TCR2);
++        gpu_wr(sm, cbb + SMMU_CB_TCR, SMMU_TCR_39_BITS);
++        gpu_wr(sm, cbb + SMMU_CB_TTBR0, (uint32_t)tcb);
++        gpu_wr(sm, cbb + SMMU_CB_TTBR0 + 4, (uint32_t)(tcb >> 32));
++        gpu_wr(sm, cbb + SMMU_CB_TTBR1, 0);
++        gpu_wr(sm, cbb + SMMU_CB_TTBR1 + 4, 0);
++        gpu_wr(sm, cbb + SMMU_CB_MAIR0, SMMU_MAIR0);
++        gpu_wr(sm, cbb + SMMU_CB_MAIR1, 0);
++        gpu_wr(sm, cbb + SMMU_CB_FSR, SMMU_FSR_ALL);
++        gpu_wr(sm, cbb + SMMU_CB_TLBIASID, 1);
++        gpu_wr(sm, cbb + SMMU_CB_TLBSYNC, 1);
++        gpu_wait(1);
++        gpu_wr(sm, cbb + SMMU_CB_SCTLR, sctlr_on ? SMMU_SCTLR_ON : 0);
++        for (uint32_t i = 0; i < 6; i++) {
++                gpu_wr(sm, SMMU_SMR(i), smr);
++                gpu_wr(sm, SMMU_S2CR(i), s2cr);
++        }
++        gpu_wait(1);
++}
++
++/* Load one CM3 program into ITCM with a zeroed DTCM and run it for wait_ms. */
++static void
++gpu_cm3_run(vm_offset_t gmu, const uint32_t *prog, uint32_t words, unsigned wait_ms)
++{
++        gpu_wr(gmu, GMU_CM3_SYSRESET, 1);
++        gpu_wait(2);
++        for (uint32_t i = 0; i < words; i++) {
++                gpu_wr(gmu, GMU_ITCM_WINDOW + 4u * i, prog[i]);
++        }
++        gpu_wr(gmu, GMU_SYS_BUS_CONFIG, 1);
++        gpu_wr(gmu, GMU_ICACHE_CONFIG, 0);
++        gpu_wr(gmu, GMU_DCACHE_CONFIG, 0);
++        gpu_wr(gmu, GMU_DTCM_WINDOW, 0);
++        gpu_wr(gmu, GMU_DTCM_WINDOW + 4, 0);
++        gpu_wr(gmu, GMU_DTCM_WINDOW + 8, 0);
++        gpu_wr(gmu, GMU_DTCM_WINDOW + 12, 0);
++        gpu_wr(gmu, GMU_CM3_SYSRESET, 0);
++        gpu_wait(wait_ms);
+ }
+ 
+ static void
+@@ -1290,96 +1342,126 @@
+         int gpuscan = 0;
+         (void)PE_parse_boot_argn("gpuscan", &gpuscan, sizeof(gpuscan));
+         if (gpuscan && gputest) {
+-                /* t53: four discriminators, then the real firmware.
+-                 *  test 0  every stream-table entry matches any SID and
+-                 *          translates through context 1 -> does the CM3
+-                 *          reach the HFI page at all?
+-                 *  test 1  every entry bypasses: the CM3 reads two known
+-                 *          MMIO words (SMMU IDR0, GMU CM3_CFG) at their
+-                 *          physical addresses.  No page table involved.
+-                 *  test 2  every entry faults: does the access raise a
+-                 *          global fault, i.e. reach this SMMU at all?
+-                 *  test 3  test 0's setup again, but the CM3 stores
+-                 *          0xfeedface into the HFI page and the host reads
+-                 *          it back (write direction).
+-                 * The firmware's TCM image is then restored and the CM3 is
+-                 * released for real under test 0's mapping. */
++                /* t54: t53 showed every external CM3 access hangs and never
++                 * reaches the SMMU (all-match SMRs + S2CR=FAULT still left
++                 * sgfsr=0, and the store never completed).  This round repairs
++                 * t53's two blind discriminators and probes the path in front
++                 * of the SMMU:
++                 *   A  true per-stream BYPASS (valid match-all SMR +
++                 *      S2CR.Type=1) with a probe that stores what it reads:
++                 *      dtcm = 11 <hfi word> 22 4c017e06 on success.
++                 *   B  translate through CB1 -> the HFI page word.
++                 *   C  write direction with a host sentinel that differs
++                 *      (0xabcd0001 -> want 0xfeedface).
++                 *   D  S2CR.Type=FAULT, watch SGFSR.
++                 * The GBIF CX arbiter then gets unhalted and read back, the GX
++                 * GDSC (the GMU node's second supply) is powered, and A/B run
++                 * again before the firmware's TCM is restored. */
+                 uint32_t cbb1 = (sm_pages + 1) * sm_page;
+                 uint64_t tcb = (uint64_t)gpu_table_phys(root) | 1ull << 48;
+-                uint32_t smr_all = SMMU_SMR_VALID | 0x7fffu << 16;      /* any SID */
+-
++                uint32_t smr_all = SMMU_SMR_VALID | 0x7fffu << 16;
++
++                printf("SWEET GPU: t54: baseline gbpa=%#x sgfsr=%#x cb1fsr=%#x cbar1=%#x smr1=%#x s2cr1=%#x\n",
++                    gpu_rd(sm, 0x4u), gpu_rd(sm, SMMU_SGFSR), gpu_rd(sm, cbb1 + SMMU_CB_FSR),
++                    gpu_rd(sm, sm_page + 4u), gpu_rd(sm, SMMU_SMR(1)), gpu_rd(sm, SMMU_S2CR(1)));
++                printf("SWEET GPU: t54: gbif halt=%#x ack=%#x\n",
++                    gpu_rd(gbif, GBIF_HALT), gpu_rd(gbif, GBIF_HALT_ACK));
++                gpu_wr(gbif, GBIF_HALT, 0);
++                gpu_wait(2);
++                printf("SWEET GPU: t54: gbif unhalt -> halt=%#x ack=%#x\n",
++                    gpu_rd(gbif, GBIF_HALT), gpu_rd(gbif, GBIF_HALT_ACK));
++                gpu_wr(gbif, GBIF_HALT_ACK, 0xfu);      /* write-1-to-clear if supported */
++                gpu_wait(1);
++                printf("SWEET GPU: t54: gbif ack clear -> halt=%#x ack=%#x\n",
++                    gpu_rd(gbif, GBIF_HALT), gpu_rd(gbif, GBIF_HALT_ACK));
++
++                uint32_t probe[11];
++                memcpy(probe, gputest_probe, sizeof(probe));
++                uint64_t hfi_pa = hfi_mem ? (uint64_t)kvtophys(hfi_mem + 0x0F00) : 0;
+                 if (hfi_mem) {
+                         ((volatile uint32_t *)hfi_mem)[0x0F00 / 4] = 0xFEEDFACEu;
+                         gpu_to_memory(hfi_mem, hfi_sz);
++                }
++                if (hfi_pa && hfi_pa < 0x100000000ull) {
++                        probe[9] = (uint32_t)hfi_pa;
++                }
++                printf("SWEET GPU: t54: hfi_pa=%#llx bypass read word=%#x\n",
++                    (unsigned long long)hfi_pa, probe[9]);
++                gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u << 16u, false);
++                gpu_cm3_run(gmu5, probe, 11, 20);
++                printf("SWEET GPU: t54: A bypass probe -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
++                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
++
++                gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u, true);
++                gpu_cm3_run(gmu5, gputest_prog, 15, 20);
++                printf("SWEET GPU: t54: B translate hfi -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
++                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
++
++                if (hfi_mem) {
++                        ((volatile uint32_t *)hfi_mem)[0x0F00 / 4] = 0xABCD0001u;
++                        gpu_to_memory(hfi_mem, hfi_sz);
++                }
++                gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u, true);
++                gpu_cm3_run(gmu5, gputest_write, 10, 20);
++                if (hfi_mem) {
+                         gpu_from_memory(hfi_mem, hfi_sz);
+-                        printf("SWEET GPU: t53: host hfi word = %#x\n",
+-                            ((volatile uint32_t *)hfi_mem)[0x0F00 / 4]);
+-                }
+-                printf("SWEET GPU: t53: baseline sgfsr=%#x cb1fsr=%#x cbar1=%#x smr1=%#x s2cr1=%#x\n",
+-                    gpu_rd(sm, SMMU_SGFSR), gpu_rd(sm, cbb1 + SMMU_CB_FSR),
+-                    gpu_rd(sm, sm_page + 4u), gpu_rd(sm, SMMU_SMR(1)), gpu_rd(sm, SMMU_S2CR(1)));
+-
+-                for (int test = 0; test < 4; test++) {
+-                        uint32_t s2cr_type = (test == 1) ? 1u << 16u : (test == 2) ? 2u << 16u : 0u;
+-                        gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);
+-                        gpu_wait(2);
+-                        gpu_wr(sm, sm_page + 4u, SMMU_CBAR_STAGE_1);
+-                        gpu_wr(sm, sm_page + SMMU_CBA2R(1), SMMU_CBA2R_64_BIT);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_SCTLR, 0);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TCR2, SMMU_TCR2);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TCR, SMMU_TCR_39_BITS);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TTBR0, (uint32_t)tcb);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TTBR0 + 4, (uint32_t)(tcb >> 32));
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TTBR1, 0);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TTBR1 + 4, 0);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_MAIR0, SMMU_MAIR0);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_MAIR1, 0);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_FSR, SMMU_FSR_ALL);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TLBIASID, 1);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_TLBSYNC, 1);
+-                        gpu_wait(1);
+-                        gpu_wr(sm, cbb1 + SMMU_CB_SCTLR, test == 1 ? 0 : SMMU_SCTLR_ON);
+-                        for (uint32_t i = 0; i < 6; i++) {
+-                                gpu_wr(sm, SMMU_SMR(i), test == 1 ? 0 : smr_all);
+-                                gpu_wr(sm, SMMU_S2CR(i), test == 1 ? (1u << 16u) : (s2cr_type | 1u));
++                }
++                printf("SWEET GPU: t54: C write -> dtcm %#x %#x %#x %#x host=%#x fsr=%#x sgfsr=%#x\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
++                    hfi_mem ? ((volatile uint32_t *)hfi_mem)[0x0F00 / 4] : 0,
++                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
++
++                gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 2u << 16u | 1u, true);
++                gpu_cm3_run(gmu5, gputest_prog, 15, 20);
++                printf("SWEET GPU: t54: D fault probe -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
++                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
++
++                /* The GMU node has two supplies (vddcx, vdd = GX GDSC); stage 1
++                 * only brought CX on.  Power GX and re-run the two reads that
++                 * matter, so a change is attributable. */
++                uint32_t gx0 = gpu_rd(gpucc, GPUCC_GX_GDSCR);
++                printf("SWEET GPU: t54: gx_gdscr=%#x gx_domain=%#x gx_gmu=%#x\n",
++                    gx0, gpu_rd(gpucc, GPUCC_GX_DOMAIN_ADDR), gpu_rd(gpucc, GPUCC_GX_GMU_CBCR));
++                if (gx0 & GDSC_HW_CONTROL) {
++                        printf("SWEET GPU: t54: GX under hardware control; not touching it\n");
++                } else if (!(gx0 & GDSC_POWER_ON)) {
++                        gpu_wr(gpucc, GPUCC_GX_GDSCR, gx0 & ~GDSC_SW_COLLAPSE);
++                        for (int i = 0; i < 100 && !(gpu_rd(gpucc, GPUCC_GX_GDSCR) & GDSC_POWER_ON); i++) {
++                                gpu_wait(1);
+                         }
+-                        if (test == 1) {
+-                                for (int i = 0; i < 10; i++) {
+-                                        gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, gputest_bypass[i]);
+-                                }
+-                        } else if (test == 3) {
+-                                for (int i = 0; i < 10; i++) {
+-                                        gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, gputest_write[i]);
+-                                }
+-                        } else {
+-                                for (int i = 0; i < 15; i++) {
+-                                        gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, gputest_prog[i]);
+-                                }
++                        printf("SWEET GPU: t54: gx after gdsc=%#x gx_domain=%#x\n",
++                            gpu_rd(gpucc, GPUCC_GX_GDSCR), gpu_rd(gpucc, GPUCC_GX_DOMAIN_ADDR));
++                        uint32_t gxc = gpu_rd(gpucc, GPUCC_GX_GMU_CBCR);
++                        if (!(gxc & CBCR_ENABLE)) {
++                                gpu_wr(gpucc, GPUCC_GX_GMU_CBCR, gxc | CBCR_ENABLE);
+                         }
+-                        gpu_wr(gmu5, GMU_SYS_BUS_CONFIG, 1);
+-                        gpu_wr(gmu5, GMU_ICACHE_CONFIG, 0);
+-                        gpu_wr(gmu5, GMU_DCACHE_CONFIG, 0);
+-                        gpu_wr(gmu5, GMU_DTCM_WINDOW, 0);
+-                        gpu_wr(gmu5, GMU_DTCM_WINDOW + 4, 0);
+-                        gpu_wr(gmu5, GMU_DTCM_WINDOW + 8, 0);
+-                        gpu_wr(gmu5, GMU_DTCM_WINDOW + 12, 0);
+-                        gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
+-                        gpu_wait(20);
+-                        if (test == 3 && hfi_mem) {
+-                                gpu_from_memory(hfi_mem, hfi_sz);
++                        for (int i = 0; i < 20 && (gpu_rd(gpucc, GPUCC_GX_GMU_CBCR) & CBCR_OFF); i++) {
++                                gpu_wait(1);
+                         }
+-                        printf("SWEET GPU: t53: test %d -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
+-                            test,
+-                            gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+-                            gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+-                            gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
+-                        if (test == 3 && hfi_mem) {
+-                                printf("SWEET GPU: t53: write test host sees %#x (want feedface)\n",
+-                                    ((volatile uint32_t *)hfi_mem)[0x0F00 / 4]);
+-                                ((volatile uint32_t *)hfi_mem)[0x0F00 / 4] = 0xFEEDFACEu;
+-                                gpu_to_memory(hfi_mem, hfi_sz);
+-                        }
+-                }
++                        printf("SWEET GPU: t54: gx_gmu=%#x\n", gpu_rd(gpucc, GPUCC_GX_GMU_CBCR));
++                } else {
++                        printf("SWEET GPU: t54: GX already powered; not touching it\n");
++                }
++
++                gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u << 16u, false);
++                gpu_cm3_run(gmu5, probe, 11, 20);
++                printf("SWEET GPU: t54: A2 bypass after gx -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
++                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
++                gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u, true);
++                gpu_cm3_run(gmu5, gputest_prog, 15, 20);
++                printf("SWEET GPU: t54: B2 translate after gx -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
++                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
++                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
+ 
+                 /* The tests overwrote ITCM/DTCM; put the firmware's TCM blocks
+                  * back, give context 1 an all-SID match and let it run. */
+@@ -1414,7 +1496,7 @@
+                 gpu_wr(gmu5, GMU_SYS_BUS_CONFIG, 1);
+                 gpu_wr(gmu5, GMU_ICACHE_CONFIG, 1);
+                 gpu_wr(gmu5, GMU_DCACHE_CONFIG, 1);
+-                printf("SWEET GPU: t53: firmware TCM restored, all-match SMR -> context 1, releasing\n");
++                printf("SWEET GPU: t54: firmware TCM restored, all-match SMR -> context 1, releasing\n");
+                 gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
+         } else {
+                 gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
+@@ -1439,18 +1521,26 @@
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8));
+         }
+         {
+-                vm_offset_t tbu = ml_io_map(0x02cc5000u, 0x1000);
+-                vm_offset_t tbu_st = ml_io_map(0x02cc2200u, 0x1000);
++                vm_offset_t tbu0 = ml_io_map(0x02cc5000u, 0x1000);
++                vm_offset_t tbu1 = ml_io_map(0x02cc9000u, 0x1000);
++                vm_offset_t tbu_st = ml_io_map(0x02cc2000u, 0x1000);
+                 printf("SWEET GPU: stage6: smmu sgfsr=%#x tbu_pwr=%#x sync_inv=%#x safe_wait=%#x\n",
+                     gpu_rd(sm, 0x048u), gpu_rd(sm, 0x2204u), gpu_rd(sm, 0x25dcu), gpu_rd(sm, 0x2670u));
+                 printf("SWEET GPU: stage6: cb fsr %#x %#x %#x %#x %#x far1=%#x fsynr1=%#x\n",
+                     gpu_rd(sm, 0x8058u), gpu_rd(sm, 0x9058u), gpu_rd(sm, 0xa058u),
+                     gpu_rd(sm, 0xb058u), gpu_rd(sm, 0xc058u),
+                     gpu_rd(sm, cb + 0x60u), gpu_rd(sm, cb + 0x68u));
+-                if (tbu && tbu_st) {
+-                        printf("SWEET GPU: stage6: tbu %08x %08x %08x %08x st %08x %08x\n",
+-                            gpu_rd(tbu, 0), gpu_rd(tbu, 4), gpu_rd(tbu, 8), gpu_rd(tbu, 0xc),
++                /* gfx_0_tbu covers SID 0..0x3ff, gfx_1_tbu 0x400..0x7ff
++                 * (the GMU's 4/5); t53 only ever read tbu0. */
++                if (tbu0 && tbu_st) {
++                        printf("SWEET GPU: stage6: tbu0 %08x %08x %08x %08x st %08x %08x\n",
++                            gpu_rd(tbu0, 0), gpu_rd(tbu0, 4), gpu_rd(tbu0, 8), gpu_rd(tbu0, 0xc),
+                             gpu_rd(tbu_st, 0), gpu_rd(tbu_st, 4));
++                }
++                if (tbu1 && tbu_st) {
++                        printf("SWEET GPU: stage6: tbu1 %08x %08x %08x %08x st %08x %08x\n",
++                            gpu_rd(tbu1, 0), gpu_rd(tbu1, 4), gpu_rd(tbu1, 8), gpu_rd(tbu1, 0xc),
++                            gpu_rd(tbu_st, 0x208), gpu_rd(tbu_st, 0x20c));
+                 }
+         }
+         uint32_t log_wptr = gpu_rd(gmu5, GMU_PWR_COL_CP_RESP);

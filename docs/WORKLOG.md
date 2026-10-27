@@ -916,3 +916,29 @@ Stage Summary:
 **0133（t53）**：test 0 全匹配 SMR→CB1 读 HFI；test 1 全 BYPASS 读已知 MMIO（SMMU IDR0 0x02ca0020=0x4c017e06、GMU CM3_CFG 0x02c7e0b4=0x4052）判断 GMU AHB 主口；test 2 全 FAULT 看 SGFSR；test 3 写方向；最后恢复真固件 TCM、保留全匹配 SMR→CB1 直接释放 CM3 轮询 fw_init。
 
 **工程**：0133 对 0132 终态 dry-run 通过；commit 4eea68c → run 40450361109。
+
+---
+
+## Task 65 (r64/t54) — t53 判读：外部访问不达 SMMU；t54 真 BYPASS + GBIF + GX（2026-10-27）
+
+**t53（0133）实机**（12:46 boot，log 242,496 B / flush #206）：
+- baseline `cbar1=0x1f300 smr1=0x84000005 s2cr1=0x1`：SMMU 回读我们的编程（时钟投票后可信）；
+- test 0（全匹配→CB1 真页表，读 HFI）：`deadbeef 0 0 0 fsr=0x400 sgfsr=0` → 外部读不完成；
+- test 1（t53 版 BYPASS）：`0 0 0 0`，**无判别力**（程序不写 DTCM；SMR 全无效时 S2CR 不参与匹配）；
+- test 2（全匹配 + S2CR.Type=FAULT）：`deadbeef 0 0 0 fsr=0x400 sgfsr=0` → **零 SGFSR，事务没到本 SMMU**；
+- test 3（写）：`0 0 0 0` → 外部写也不完成；`host sees feedface` 是 host 自己种的值，空检验；
+- 固件 `fw_init=0`、GMU log 空、`stage6=FAIL`；`tbu_pwr=0` 不可信（vendor 用 SCM IO 读，TCU v1.0 的 status-reg 不可访问）；只读了 TBU0，GMU 的 SID 4/5 在 **TBU1 0x2CC9000 / status 0x2CC2208**，从未读过。
+
+**结论**：CM3 核心正常，外部读/写在任何流表配置下都挂死且不产生 fault → 阻塞在 SMMU **之前**（GMU AHB 主口 / NoC / GBIF），不是流表/CB/页表。
+
+**0134（t54）**：
+- A：有效全匹配 SMR + S2CR.Type=BYPASS；新探针把 **HFI 页物理地址**（kvtophys，<4 GB 时）读入 DTCM[1]，再读 SMMU IDR0 → DTCM[3]（dtcm = `11 <hfi 值> 22 4c017e06`）；
+- B：全匹配 + CB1 真页表读 HFI 虚拟地址（期望 `deadbeef feedface 11 cafebeef`）；
+- C：写方向，host 先种 `0xabcd0001`（期望被改成 `feedface`），dtcm0=0x11 证明 store 完成；
+- D：S2CR.Type=FAULT，看 SGFSR；
+- GBIF：HALT=0 后回读 HALT/ACK（t53 stage1 ack=0x3 的疑点）；
+- GX：GX GDSC 上电 + gx_gmu 时钟，再跑 A2/B2；
+- 最后恢复固件 TCM、全匹配 SMR→CB1、释放 CM3 轮询 fw_init；
+- stage6 转储扩为 tbu0 + tbu1。
+- 工程：0134 对 0133 终态 diff，重放整系列后逐字节一致；commit/push fork。
+
