@@ -1013,3 +1013,18 @@ Stage Summary:
 3. 常规 B/C/E/D、GX、固件释放、fw_init。
 - 工程：0137 与整系列重放逐字节一致。
 
+---
+
+## Task 70 (r68/t58) — t57 判读（BYPASS 也挂死 → 阻塞在 GMU AHB 出站路径）→ t58：fence 三值 + RBBM GBIF（2026-10-27）
+
+**t57（0137）实机**（22:19 boot，log 248,352 B / flush #227）：
+- `lowpa bootargs=0x1_01183a68/0x20002`：boot_args 与 DTB 都在 >4 GB，无可用低物理地址目标；
+- **`B0 hfi bypass -> deadbeef 0 0 0`：HFI 有效窗口读在 S2CR=BYPASS 下也挂死** → bypass 不需要 TCU，阻塞在 GMU AHB 主口出站路径（GMU AHB 桥 → GBIF/NoC/SMMU TBU），不是流表/翻译/TCU；
+- 窗口外地址 0xdeadbeef = GMU 未映射默认值；A/A2 同前；E/C/D 仍挂；GX 上电成功；fw_init=0。
+
+**0138（t58）**：
+- F0/F1/F2：分别用 fence range 0（禁用）/ 0x80A008A0（vendor）/ 0x802800A0（现用）跑 HFI 读（BYPASS），任一完成即锁定 fence；
+- GX 上电后读写 RBBM_GBIF_HALT/ACK（0x2c00058/0x5c），对比 CX ack=0x3；
+- 常规 A/B0/B/C/E/D、A2/B2、固件释放、fw_init。
+- 工程：0138 与整系列重放逐字节一致。
+
