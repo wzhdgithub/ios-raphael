@@ -996,3 +996,20 @@ Stage Summary:
 4. 有效翻译/写/FAULT、GX、A2/B2、固件释放、fw_init。
 - 工程：`PE_state.deviceTreeHead` 已在 xnu-8796.141.3 的 pexpert.h 中确认；0136 与整系列重放逐字节一致。
 
+---
+
+## Task 69 (r67/t57) — t56 判读（0xdeadbeef 可能是未映射窗口哑值；TCU 不走表）→ t57：BYPASS 读 HFI 窗口 + 低物理地址探针（2026-10-27）
+
+**t56（0136）实机**（21:07 boot，log 253,701 B / flush #253）：
+- SMMU 非安全别名 0x400/0x410/0x448 读全 0（secure 0x0 cr0=0x200406 acr=0x1c），无 CLIENTPD 问题；
+- `PE_state.deviceTreeHead` PA=0x1_024d8000（>4 GB），head 字=0x9（非 FDT 魔数）→ 低地址探针未生效；
+- A 映射读 0x0 得 **0x43f80（ITCM 向量字）** → GMU 只译码自己的窗口；四个寄存器目标 0xdeadbeef 很可能只是未映射地址默认值；
+- 无效 TTBR0=0 仍挂（FSR 0x400，无 TF）→ TCU 连走表都没开始；
+- B/C/D 同前；GX 上电成功；fw_init=0。
+
+**0137（t57）**：
+1. A 的首读换成低物理地址候选（`PE_state.bootArgs` 的 PA/word，<4 GB 时），验证 GMU AHB→DRAM 是否真通；
+2. **B0：HFI 读程序（0x60006F00，有效 GMU 窗口）在 S2CR.Type=BYPASS 下运行** —— 完成 = 流表生效、bypass 通，问题在 TCU 翻译；挂 = 事务在 SMMU 之前被挡或流表是 hyp 的；
+3. 常规 B/C/E/D、GX、固件释放、fw_init。
+- 工程：0137 与整系列重放逐字节一致。
+
