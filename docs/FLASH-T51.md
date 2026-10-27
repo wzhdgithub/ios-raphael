@@ -32,3 +32,9 @@ SMMU 的 context/stream 组合全部排除。必须区分：
 ```
 fastboot boot raphael-t50-scan-debug.img
 ```
+
+## 修正（2026-10-27 11:35）
+
+第一次构建（run 40443623266）在 `Guard - no silently skipped patches` 失败：0131 被跳过。
+原因：0131 当时是对着**包含未入库 0129** 的本地文件生成的，而 CI 树是 0103…0128 + 0130（没有 0129），
+上下文不匹配。已按真实 CI 树（0103…0130）重建基线并重新生成 0131；`patch -p1 --dry-run` 通过。

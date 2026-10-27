@@ -874,3 +874,5 @@ Stage Summary:
 **0131**：gputest 增加“读 HFI 页 0x60006F00（宿主写 0xFEEDFACE）”以验证 GMU→SMMU→宿主内存整条路径；扫描增加 ICACHE/DCACHE 配置 1/1 vs 0/0 维度（30 组）；恢复 SGFSR/TBU/FSR 诊断转储。
 
 **工程**：0131 对 0130 终态 `patch -p1 --dry-run` 通过；push 自动触发 CI（不手动 dispatch）。
+
+**修正**：首个 t51 构建（run 40443623266）的 `Guard` 步骤发现 0131 被跳过——0131 误对着含未入库 0129 的本地文件生成。已用仓库 patch 序列重建真实基线（0103…0128+0130）并重新生成 0131，dry-run 通过后重新推送。

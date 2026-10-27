@@ -28,7 +28,7 @@
                          gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, gputest_prog[i]);
                  }
                  if (icache_mem) {
-@@ -1285,8 +1286,13 @@
+@@ -1266,8 +1267,13 @@
                  /* Try every (context bank 0-4) x (SMR strategy 0-2) in one boot:
                   * hold the CM3, reprogram the SMMU, restart the ICACHE test and
                   * read the three DTCM words back. */
@@ -42,7 +42,7 @@
                                  gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);
                                  gpu_wait(2);
                                  uint64_t root64 = (uint64_t)gpu_table_phys(root) | (uint64_t)cbx << 48;
-@@ -1331,14 +1337,20 @@
+@@ -1312,14 +1318,20 @@
                                          memcpy((void *)(icache_mem + 0x100), gputest_icache, sizeof(gputest_icache));
                                          gpu_to_memory(icache_mem, 0x200);
                                  }
@@ -65,10 +65,12 @@
                          }
                  }
                  gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);
-@@ -1367,6 +1379,21 @@
+@@ -1346,6 +1358,21 @@
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8));
          }
-         {
-                 vm_offset_t tbu = ml_io_map(0x02cc5000u, 0x1000);
++        {
++                vm_offset_t tbu = ml_io_map(0x02cc5000u, 0x1000);
 +                vm_offset_t tbu_st = ml_io_map(0x02cc2200u, 0x1000);
 +                printf("SWEET GPU: stage6: smmu sgfsr=%#x tbu_pwr=%#x sync_inv=%#x safe_wait=%#x\n",
 +                    gpu_rd(sm, 0x048u), gpu_rd(sm, 0x2204u), gpu_rd(sm, 0x25dcu), gpu_rd(sm, 0x2670u));
@@ -82,8 +84,6 @@
 +                            gpu_rd(tbu_st, 0), gpu_rd(tbu_st, 4));
 +                }
 +        }
-+        {
-+                vm_offset_t tbu = ml_io_map(0x02cc5000u, 0x1000);
-                 vm_offset_t tbu_st = ml_io_map(0x02cc2200u, 0x1000);
-                 printf("SWEET GPU: stage6: smmu sgfsr=%#x tbu_pwr=%#x sync_inv=%#x safe_wait=%#x\n",
-                     gpu_rd(sm, 0x048u), gpu_rd(sm, 0x2204u), gpu_rd(sm, 0x25dcu), gpu_rd(sm, 0x2670u));
+         uint32_t log_wptr = gpu_rd(gmu5, GMU_PWR_COL_CP_RESP);
+         uint32_t smmu_fsr = gpu_rd(sm, cb + SMMU_CB_FSR);
+         gpu_from_memory(log_mem, log_sz);
