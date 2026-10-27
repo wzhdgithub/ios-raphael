@@ -864,3 +864,13 @@ Stage Summary:
 **0130（+70/-8）**：`gpuscan=1` 在 stage 6 循环 (CB 0–4) × (SMR 策略 0–2) 15 种组合：每次复位 CM3、重编程 SMMU、重写 ITCM/ICACHE 测试程序、清 DTCM、释放 CM3、读 DTCM[0..2] 并打印。另加 SGFSR/TBU_PWR/SYNC_INV/SAFE_WAIT/CB FSR/FAR/TBU 寄存器转储。
 
 **工程**：0130 对 0129 终态 `patch -p1 --dry-run` 通过。
+
+---
+
+## Task 62 (r61/t51) — t50 扫描全败；测外部路径与 cache 配置（2026-10-27）
+
+**t50（0130）**：一次启动扫描 (CB 0–4) × (SMR 0–2) 共 15 组，全部 `deadbeef 11 0`——SMMU context/stream 组合全部排除（非安全 bank 的配置无法让 CM3 访问 ICACHE）。
+
+**0131**：gputest 增加“读 HFI 页 0x60006F00（宿主写 0xFEEDFACE）”以验证 GMU→SMMU→宿主内存整条路径；扫描增加 ICACHE/DCACHE 配置 1/1 vs 0/0 维度（30 组）；恢复 SGFSR/TBU/FSR 诊断转储。
+
+**工程**：0131 对 0130 终态 `patch -p1 --dry-run` 通过；push 自动触发 CI（不手动 dispatch）。

@@ -1,0 +1,89 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -144,12 +144,13 @@
+ 
+ /* gputest: DTCM[0]=deadbeef, DTCM[1]=0x11, then blx to a routine placed at
+  * ICACHE 0x4100 that writes DTCM[2]=0xcafebeef. */
+-static const uint32_t gputest_prog[11] = {
+-        0x00043f80u, 0x00000009u, 0x4C064805u, 0x25116004u,
+-        0x4B056045u, 0xE7FE4798u, 0xBF00BF00u, 0xBF00BF00u,
+-        0x00040000u, 0xDEADBEEFu, 0x00004101u };
++static const uint32_t gputest_prog[15] = {
++        0x00043f80u, 0x00000009u, 0x4C094808u, 0x490A6004u,
++        0x6042680Au, 0x60852511u, 0x47984B07u, 0xBF00E7FEu,
++        0xBF00BF00u, 0xBF00BF00u, 0xBF00BF00u, 0x00040000u,
++        0xDEADBEEFu, 0x60006F00u, 0x00004101u };
+ static const uint32_t gputest_icache[5] = {
+-        0x49034802u, 0xE7FE6101u, 0xBF00BF00u, 0x00040000u, 0xCAFEBEEFu };
++        0x49034802u, 0xE7FE60C1u, 0xBF00BF00u, 0x00040000u, 0xCAFEBEEFu };
+ 
+ static int gpu_sleep_chan;
+ 
+@@ -961,7 +962,7 @@
+                 /* ITCM: DTCM[0]=0xdeadbeef; DTCM[1]=word read from ICACHE 0x7280
+                  * (0xbabeface in the firmware); then blx to a routine placed at
+                  * ICACHE 0x4100 which writes DTCM[2]=0xcafebeef. */
+-                for (int i = 0; i < 11; i++) {
++                for (int i = 0; i < 15; i++) {
+                         gpu_wr(gmu5, GMU_ITCM_WINDOW + 4u * i, gputest_prog[i]);
+                 }
+                 if (icache_mem) {
+@@ -1285,8 +1286,13 @@
+                 /* Try every (context bank 0-4) x (SMR strategy 0-2) in one boot:
+                  * hold the CM3, reprogram the SMMU, restart the ICACHE test and
+                  * read the three DTCM words back. */
++                if (hfi_mem) {
++                        ((volatile uint32_t *)hfi_mem)[0x0F00 / 4] = 0xFEEDFACEu;
++                        gpu_to_memory(hfi_mem, hfi_sz);
++                }
+                 for (uint32_t cbx = 0; cbx < 5; cbx++) {
+                         for (int mode = 0; mode < 3; mode++) {
++                          for (int cache = 0; cache < 2; cache++) {
+                                 gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);
+                                 gpu_wait(2);
+                                 uint64_t root64 = (uint64_t)gpu_table_phys(root) | (uint64_t)cbx << 48;
+@@ -1331,14 +1337,20 @@
+                                         memcpy((void *)(icache_mem + 0x100), gputest_icache, sizeof(gputest_icache));
+                                         gpu_to_memory(icache_mem, 0x200);
+                                 }
++                                gpu_wr(gmu5, GMU_SYS_BUS_CONFIG, 1);
++                                gpu_wr(gmu5, GMU_ICACHE_CONFIG, cache ? 0 : 1);
++                                gpu_wr(gmu5, GMU_DCACHE_CONFIG, cache ? 0 : 1);
+                                 gpu_wr(gmu5, GMU_DTCM_WINDOW, 0);
+                                 gpu_wr(gmu5, GMU_DTCM_WINDOW + 4, 0);
+                                 gpu_wr(gmu5, GMU_DTCM_WINDOW + 8, 0);
++                                gpu_wr(gmu5, GMU_DTCM_WINDOW + 12, 0);
+                                 gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
+                                 gpu_wait(20);
+-                                printf("SWEET GPU: scan cb=%u smr=%d -> %#x %#x %#x\n", cbx, mode,
++                                printf("SWEET GPU: scan cb=%u smr=%d cache=%d -> %#x %#x %#x %#x\n",
++                                    cbx, mode, cache,
+                                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+-                                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8));
++                                    gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12));
++                          }
+                         }
+                 }
+                 gpu_wr(gmu5, GMU_CM3_SYSRESET, 1);
+@@ -1367,6 +1379,21 @@
+         }
+         {
+                 vm_offset_t tbu = ml_io_map(0x02cc5000u, 0x1000);
++                vm_offset_t tbu_st = ml_io_map(0x02cc2200u, 0x1000);
++                printf("SWEET GPU: stage6: smmu sgfsr=%#x tbu_pwr=%#x sync_inv=%#x safe_wait=%#x\n",
++                    gpu_rd(sm, 0x048u), gpu_rd(sm, 0x2204u), gpu_rd(sm, 0x25dcu), gpu_rd(sm, 0x2670u));
++                printf("SWEET GPU: stage6: cb fsr %#x %#x %#x %#x %#x far1=%#x fsynr1=%#x\n",
++                    gpu_rd(sm, 0x8058u), gpu_rd(sm, 0x9058u), gpu_rd(sm, 0xa058u),
++                    gpu_rd(sm, 0xb058u), gpu_rd(sm, 0xc058u),
++                    gpu_rd(sm, cb + 0x60u), gpu_rd(sm, cb + 0x68u));
++                if (tbu && tbu_st) {
++                        printf("SWEET GPU: stage6: tbu %08x %08x %08x %08x st %08x %08x\n",
++                            gpu_rd(tbu, 0), gpu_rd(tbu, 4), gpu_rd(tbu, 8), gpu_rd(tbu, 0xc),
++                            gpu_rd(tbu_st, 0), gpu_rd(tbu_st, 4));
++                }
++        }
++        {
++                vm_offset_t tbu = ml_io_map(0x02cc5000u, 0x1000);
+                 vm_offset_t tbu_st = ml_io_map(0x02cc2200u, 0x1000);
+                 printf("SWEET GPU: stage6: smmu sgfsr=%#x tbu_pwr=%#x sync_inv=%#x safe_wait=%#x\n",
+                     gpu_rd(sm, 0x048u), gpu_rd(sm, 0x2204u), gpu_rd(sm, 0x25dcu), gpu_rd(sm, 0x2670u));
