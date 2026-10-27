@@ -1,0 +1,387 @@
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -61,6 +61,7 @@
+ #include <pexpert/pexpert.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
+ /* osfmk/vm/pmap.h does not reach BSD in this configuration. */
+ extern uint64_t kvtophys(vm_offset_t);
+ /* Mach MIG declaration is not included by BSD's exported thread.h. */
+@@ -364,6 +365,7 @@
+ #define GMU_HFI_CTRL_INIT      GMU_CSR(0x7e618u)
+ #define GMU_RPMH_CTRL_ALL      0xf11u
+ #define GMU_CHIPID             0x06040000u      /* raphael dt qcom,chipid (Adreno 640) */
++#define GMU_CHIPID_HFI         0x06040100u      /* what the a640 firmware expects in HFI_SFR_ADDR */
+ #define GMU_STARTED_VALUE      0xBABEFACEu      /* vendor a6xx_gmu_start polls this exact value */
+ 
+ /* The HFI table the firmware finds at GMU_HFI_ADDRESS (vendor's a6xx_hfi.c). */
+@@ -500,6 +502,7 @@
+         gpu_wr(sm, sm_page + 4u, SMMU_CBAR_STAGE_1);
+         gpu_wr(sm, sm_page + SMMU_CBA2R(1), SMMU_CBA2R_64_BIT);
+         gpu_wr(sm, cbb + SMMU_CB_SCTLR, 0);
++        gpu_wr(sm, cbb + 4u, 0x303u);      /* a640 qcom,actlr: +15 deep PF (vendor) */
+         gpu_wr(sm, cbb + SMMU_CB_TCR2, SMMU_TCR2);
+         gpu_wr(sm, cbb + SMMU_CB_TCR, SMMU_TCR_39_BITS);
+         gpu_wr(sm, cbb + SMMU_CB_TTBR0, (uint32_t)tcb);
+@@ -542,6 +545,60 @@
+         gpu_wr(gmu, GMU_DTCM_WINDOW + 28, 0);
+         gpu_wr(gmu, GMU_CM3_SYSRESET, 0);
+         gpu_wait(wait_ms);
++}
++
++/* The boot loader's cmd-db (raphael: 0x85f20000) lists the BCM addresses RPMh
++ * knows.  The GMU's PDC program must name the real mx/cx/xo.lvl addresses, not
++ * guessed constants.  Structure and lookup follow HeliumStudio's raphael GPU
++ * driver (hakios.adreno.c, rpmh_resource()). */
++#define GPU_CMD_DB_PHYS 0x85f20000u
++#define GPU_CMD_DB_SIZE 0x20000u
++struct gpu_cmd_db_slave {
++        uint16_t id, header_offset, data_offset, count, version, reserved[3];
++};
++struct gpu_cmd_db_header {
++        uint32_t version;
++        uint8_t magic[4];
++        struct gpu_cmd_db_slave slave[8];
++        uint32_t checksum, reserved;
++        uint8_t data[0];
++};
++struct gpu_cmd_db_entry {
++        char id[8];
++        uint32_t priority[2];
++        uint32_t address;
++        uint16_t length, offset;
++};
++
++static uint32_t
++gpu_cmdb_addr(const char *name)
++{
++        static const struct gpu_cmd_db_header *db;
++        char id[8] = { 0 };
++
++        if (db == NULL) {
++                db = (const struct gpu_cmd_db_header *)
++                    ml_io_map_wcomb(GPU_CMD_DB_PHYS, GPU_CMD_DB_SIZE);
++        }
++        if (db == NULL || db->magic[0] != 0xdb || db->magic[1] != 0x30 ||
++            db->magic[2] != 0x03 || db->magic[3] != 0x0c) {
++                return 0;
++        }
++        strlcpy(id, name, sizeof(id));
++        for (unsigned s2 = 0; s2 < 8; s2++) {
++                const struct gpu_cmd_db_slave *slave = &db->slave[s2];
++                const struct gpu_cmd_db_entry *entry =
++                    (const struct gpu_cmd_db_entry *)(db->data + slave->header_offset);
++                if (slave->id == 0 || slave->count > 512) {
++                        continue;
++                }
++                for (unsigned i = 0; i < slave->count; i++) {
++                        if (memcmp(entry[i].id, id, sizeof(id)) == 0) {
++                                return entry[i].address;
++                        }
++                }
++        }
++        return 0;
+ }
+ 
+ static void
+@@ -1245,30 +1302,40 @@
+                                 gpu_wr(gmu5, GMU_RSC_SEQ_MEM_0 + 4u * i, rsc_seq[i]);
+                                 gpu_wr(pdc_seq, 4u * i, pdc_seq_mem[i]);
+                         }
+-                        /* TCS1 (power up) and TCS3 (power down) commands; a640 addr 0x30090 */
++                        /* t59: the BCM addresses the PDC must name, from the boot
++                         * loader's cmd-db, not guessed constants. */
++                        uint32_t bcm_mx = gpu_cmdb_addr("mx.lvl");
++                        uint32_t bcm_cx = gpu_cmdb_addr("cx.lvl");
++                        uint32_t bcm_xo = gpu_cmdb_addr("xo.lvl");
++                        printf("SWEET GPU: stage6: cmd_db mx.lvl=%#x cx.lvl=%#x xo.lvl=%#x\n",
++                            bcm_mx, bcm_cx, bcm_xo);
++                        if (!bcm_mx) bcm_mx = 0x30010u;
++                        if (!bcm_cx) bcm_cx = 0x30000u;
++                        if (!bcm_xo) bcm_xo = 0x30090u;
++                        /* TCS1 (power up) and TCS3 (power down) commands. */
+                         gpu_wr(pdc_cfg, PDC_TCS1_CONTROL, 0);
+                         gpu_wr(pdc_cfg, PDC_TCS1_ENABLE_BANK, 7);
+                         gpu_wr(pdc_cfg, PDC_TCS1_WAIT_BANK, 0);
+                         gpu_wr(pdc_cfg, PDC_TCS1_CMD0_MSGID, 0x10108u);
+-                        gpu_wr(pdc_cfg, PDC_TCS1_CMD0_ADDR, 0x30010u);
++                        gpu_wr(pdc_cfg, PDC_TCS1_CMD0_ADDR, bcm_mx);
+                         gpu_wr(pdc_cfg, PDC_TCS1_CMD0_DATA, 1);
+                         gpu_wr(pdc_cfg, PDC_TCS1_CMD0_MSGID + 0x10u, 0x10108u);
+-                        gpu_wr(pdc_cfg, PDC_TCS1_CMD0_ADDR + 0x10u, 0x30000u);
++                        gpu_wr(pdc_cfg, PDC_TCS1_CMD0_ADDR + 0x10u, bcm_cx);
+                         gpu_wr(pdc_cfg, PDC_TCS1_CMD0_DATA + 0x10u, 0);
+                         gpu_wr(pdc_cfg, PDC_TCS1_CMD0_MSGID + 0x20u, 0x10108u);
+-                        gpu_wr(pdc_cfg, PDC_TCS1_CMD0_ADDR + 0x20u, 0x30090u);
++                        gpu_wr(pdc_cfg, PDC_TCS1_CMD0_ADDR + 0x20u, bcm_xo);
+                         gpu_wr(pdc_cfg, PDC_TCS1_CMD0_DATA + 0x20u, 0);
+                         gpu_wr(pdc_cfg, PDC_TCS3_CONTROL, 0);
+                         gpu_wr(pdc_cfg, PDC_TCS3_ENABLE_BANK, 7);
+                         gpu_wr(pdc_cfg, PDC_TCS3_WAIT_BANK, 0);
+                         gpu_wr(pdc_cfg, PDC_TCS3_CMD0_MSGID, 0x10108u);
+-                        gpu_wr(pdc_cfg, PDC_TCS3_CMD0_ADDR, 0x30010u);
++                        gpu_wr(pdc_cfg, PDC_TCS3_CMD0_ADDR, bcm_mx);
+                         gpu_wr(pdc_cfg, PDC_TCS3_CMD0_DATA, 2);
+                         gpu_wr(pdc_cfg, PDC_TCS3_CMD0_MSGID + 0x10u, 0x10108u);
+-                        gpu_wr(pdc_cfg, PDC_TCS3_CMD0_ADDR + 0x10u, 0x30000u);
++                        gpu_wr(pdc_cfg, PDC_TCS3_CMD0_ADDR + 0x10u, bcm_cx);
+                         gpu_wr(pdc_cfg, PDC_TCS3_CMD0_DATA + 0x10u, 3);
+                         gpu_wr(pdc_cfg, PDC_TCS3_CMD0_MSGID + 0x20u, 0x10108u);
+-                        gpu_wr(pdc_cfg, PDC_TCS3_CMD0_ADDR + 0x20u, 0x30090u);
++                        gpu_wr(pdc_cfg, PDC_TCS3_CMD0_ADDR + 0x20u, bcm_xo);
+                         gpu_wr(pdc_cfg, PDC_TCS3_CMD0_DATA + 0x20u, 3);
+                         gpu_wr(pdc_cfg, PDC_SEQ_START_ADDR, 0);
+                         gpu_wr(pdc_cfg, PDC_ENABLE_PDC, 0x80000001u);
+@@ -1289,14 +1356,13 @@
+         gpu_wr(gmu5, GMU_HFI_QTBL_INFO, 1);
+         printf("SWEET GPU: stage6: config group 1 written (identity/HFI)\n");
+         gpu_wait(1500);
+-        /* a640 is a plain a6xx for Linux, whose branch writes upper 0xa,
+-         * lower 0xa0 (0x802800a0); the 0x80a008a0 in t26-t51 comes from
+-         * HackiOS's a650/8250.  Try the a640 value once. */
+-        gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, 1u << 31 | 0xa << 18 | 0xa0);
++        /* t59: the value HeliumStudio's working raphael driver writes just
++         * before the release (their GMU_FENCE_RANGE_MASK): 0x80A008A0. */
++        gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, 1u << 31 | (0xa << 2) << 18 | 0x8a0);
+         printf("SWEET GPU: stage6: ahb fence range=%#x\n", gpu_rd(gmu5, GMU_AHB_FENCE_RANGE_0));
+         gpu_wr(gmu5, GMU_CM3_CFG, 0x4052);
+         gpu_wr(gmu5, GMU_PWR_COL_CP_RESP, 0);   /* log write pointer, vendor zeroes it */
+-        gpu_wr(gmu5, GMU_HFI_SFR_ADDR, GMU_CHIPID);
++        gpu_wr(gmu5, GMU_HFI_SFR_ADDR, GMU_CHIPID_HFI);
+         gpu_wr(gmu5, GMU_PWR_COL_CP_MSG, GMU_LOG_ADDRESS | (GMU_LOG_SIZE / 4096 - 1));
+         printf("SWEET GPU: stage6: config group 2 written (fence/CM3/log)\n");
+         gpu_wait(1500);
+@@ -1348,7 +1414,7 @@
+         int gpuscan = 0;
+         (void)PE_parse_boot_argn("gpuscan", &gpuscan, sizeof(gpuscan));
+         if (gpuscan && gputest) {
+-                /* t58: t57 proved the HFI window read hangs even with
++                /* t59: t57 proved the HFI window read hangs even with
+                  * S2CR.Type=BYPASS, so the stall is in the GMU's AHB outbound
+                  * path, not in the SMMU/TCU.  Two gates live there:
+                  *   - the GMU AHB fence (ctrl/range/status);
+@@ -1363,7 +1429,7 @@
+                 uint64_t tcb = (uint64_t)gpu_table_phys(root) | 1ull << 48;
+                 uint32_t smr_all = SMMU_SMR_VALID | 0x7fffu << 16;
+ 
+-                printf("SWEET GPU: t58: baseline gbpa=%#x sgfsr=%#x cb1fsr=%#x cbar1=%#x smr1=%#x s2cr1=%#x\n",
++                printf("SWEET GPU: t59: baseline gbpa=%#x sgfsr=%#x cb1fsr=%#x cbar1=%#x smr1=%#x s2cr1=%#x\n",
+                     gpu_rd(sm, 0x4u), gpu_rd(sm, SMMU_SGFSR), gpu_rd(sm, cbb1 + SMMU_CB_FSR),
+                     gpu_rd(sm, sm_page + 4u), gpu_rd(sm, SMMU_SMR(1)), gpu_rd(sm, SMMU_S2CR(1)));
+                 /* The SMMU may be TZ-owned: its non-secure global view lives at
+@@ -1373,12 +1439,12 @@
+                 uint32_t sgfsr0 = gpu_rd(sm, 0x48u);
+                 uint32_t nscr0 = gpu_rd(sm, 0x400u), nsacr = gpu_rd(sm, 0x410u);
+                 uint32_t nsgfsr = gpu_rd(sm, 0x448u);
+-                printf("SWEET GPU: t58: secure cr0=%#x acr=%#x gfsr=%#x | ns cr0=%#x acr=%#x gfsr=%#x\n",
++                printf("SWEET GPU: t59: secure cr0=%#x acr=%#x gfsr=%#x | ns cr0=%#x acr=%#x gfsr=%#x\n",
+                     scr0, sacr, sgfsr0, nscr0, nsacr, nsgfsr);
+                 if (nscr0 & 1u) {
+                         gpu_wr(sm, 0x400u, nscr0 & ~1u);
+                         gpu_wait(1);
+-                        printf("SWEET GPU: t58: ns clientpd cleared -> %#x\n",
++                        printf("SWEET GPU: t59: ns clientpd cleared -> %#x\n",
+                             gpu_rd(sm, 0x400u));
+                 }
+                 /* A low physical DRAM address the GMU must be able to read:
+@@ -1387,7 +1453,7 @@
+                     (uint64_t)kvtophys((vm_offset_t)PE_state.deviceTreeHead) : 0;
+                 uint32_t dt_word = PE_state.deviceTreeHead ?
+                     *(volatile uint32_t *)PE_state.deviceTreeHead : 0;
+-                printf("SWEET GPU: t58: dtb head=%#lx pa=%#llx host word=%#x (want edfe0dd0)\n",
++                printf("SWEET GPU: t59: dtb head=%#lx pa=%#llx host word=%#x (want edfe0dd0)\n",
+                     (unsigned long)PE_state.deviceTreeHead, (unsigned long long)dt_pa, dt_word);
+                 /* Low-PA candidates for a real DRAM read: boot_args sit where
+                  * the bootloader left them (the DTB turned out to be >4 GB). */
+@@ -1403,14 +1469,14 @@
+                         low_pa = (uint32_t)dt_pa;
+                         low_want = dt_word;
+                 }
+-                printf("SWEET GPU: t58: lowpa bootargs=%#llx/%#x chosen=%#x want=%#x\n",
++                printf("SWEET GPU: t59: lowpa bootargs=%#llx/%#x chosen=%#x want=%#x\n",
+                     (unsigned long long)ba_pa, ba_word, low_pa, low_want);
+                 /* QSMMU TCU local halt: IMPL_DEF1 micro-MMU control.  Resume it
+                  * like qsmmuv2_resume() (clear LOCAL_HALT_REQ=bit2) and wait
+                  * for IDLE (bit3) to drop; if it is not halted, cycle it once
+                  * like qsmmuv2_device_reset() so a stale pipeline clears. */
+                 uint32_t mmu0 = gpu_rd(sm, 0x6000u);
+-                printf("SWEET GPU: t58: impl_def1=%#x halt_req=%u idle=%u\n",
++                printf("SWEET GPU: t59: impl_def1=%#x halt_req=%u idle=%u\n",
+                     mmu0, (mmu0 >> 2) & 1u, (mmu0 >> 3) & 1u);
+                 if (mmu0 & (1u << 2)) {
+                         gpu_wr(sm, 0x6000u, mmu0 & ~(1u << 2));
+@@ -1425,34 +1491,34 @@
+                         gpu_wait(1);
+                 }
+                 uint32_t mmu1 = gpu_rd(sm, 0x6000u);
+-                printf("SWEET GPU: t58: impl_def1 after=%#x halt_req=%u idle=%u\n",
++                printf("SWEET GPU: t59: impl_def1 after=%#x halt_req=%u idle=%u\n",
+                     mmu1, (mmu1 >> 2) & 1u, (mmu1 >> 3) & 1u);
+ 
+-                printf("SWEET GPU: t58: gbif halt=%#x ack=%#x\n",
++                printf("SWEET GPU: t59: gbif halt=%#x ack=%#x\n",
+                     gpu_rd(gbif, GBIF_HALT), gpu_rd(gbif, GBIF_HALT_ACK));
+                 gpu_wr(gbif, GBIF_HALT, 0);
+                 gpu_wait(2);
+-                printf("SWEET GPU: t58: gbif unhalt -> halt=%#x ack=%#x\n",
++                printf("SWEET GPU: t59: gbif unhalt -> halt=%#x ack=%#x\n",
+                     gpu_rd(gbif, GBIF_HALT), gpu_rd(gbif, GBIF_HALT_ACK));
+                 gpu_wr(gbif, GBIF_HALT_ACK, 0xfu);      /* write-1-to-clear if supported */
+                 gpu_wait(1);
+-                printf("SWEET GPU: t58: gbif ack clear -> halt=%#x ack=%#x\n",
++                printf("SWEET GPU: t59: gbif ack clear -> halt=%#x ack=%#x\n",
+                     gpu_rd(gbif, GBIF_HALT), gpu_rd(gbif, GBIF_HALT_ACK));
+ 
+                 /* t58: GMU AHB fence.  Read it, then try three range values
+                  * with the HFI read in BYPASS (no TCU involved). */
+                 uint32_t fc0 = gpu_rd(gmu5, GMU_AO_AHB_FENCE_CTRL);
+                 uint32_t fr0 = gpu_rd(gmu5, GMU_AHB_FENCE_RANGE_0);
+-                printf("SWEET GPU: t58: fence ctrl=%#x range=%#x status=%#x\n",
++                printf("SWEET GPU: t59: fence ctrl=%#x range=%#x status=%#x\n",
+                     fc0, fr0, gpu_rd(gmu5, GMU_CSR(0x8ec4cu)));
+-                static const uint32_t fences[3] = { 0u, 0x80A008A0u, 0x802800A0u };
++                static const uint32_t fences[3] = { 0x802800A0u, 0u, 0x80A008A0u };
+                 for (int f = 0; f < 3; f++) {
+                         gpu_wr(gmu5, GMU_AHB_FENCE_RANGE_0, fences[f]);
+                         gpu_wr(gmu5, GMU_AO_AHB_FENCE_CTRL, 0);
+                         gpu_wait(2);
+                         gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u << 16u, false);
+                         gpu_cm3_run(gmu5, gputest_prog, 15, 20);
+-                        printf("SWEET GPU: t58: F%d fence=%#x rb=%#x -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                        printf("SWEET GPU: t59: F%d fence=%#x rb=%#x -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
+                             f, fences[f], gpu_rd(gmu5, GMU_AHB_FENCE_RANGE_0),
+                             gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                             gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+@@ -1470,26 +1536,27 @@
+                 }
+                 gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u << 16u, false);
+                 gpu_cm3_run(gmu5, map, 19, 20);
+-                printf("SWEET GPU: t58: A bypass map -> dtcm %#x %#x %#x %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: A bypass map -> dtcm %#x %#x %#x %#x %#x %#x %#x fsr=%#x sgfsr=%#x actlr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 16), gpu_rd(gmu5, GMU_DTCM_WINDOW + 20),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 24),
+-                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
++                    gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR),
++                    gpu_rd(sm, cbb1 + 4u));
+ 
+                 /* t57: the HFI page (0x60006f00) is inside a valid GMU window.
+                  * Running the same read in BYPASS tells us whether the TBU/SMMU
+                  * bypasses our stream at all. */
+                 gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u << 16u, false);
+                 gpu_cm3_run(gmu5, gputest_prog, 15, 20);
+-                printf("SWEET GPU: t58: B0 hfi bypass -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: B0 hfi bypass -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
+ 
+                 gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u, true);
+                 gpu_cm3_run(gmu5, gputest_prog, 15, 20);
+-                printf("SWEET GPU: t58: B translate hfi -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: B translate hfi -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
+@@ -1503,7 +1570,7 @@
+                 if (hfi_mem) {
+                         gpu_from_memory(hfi_mem, hfi_sz);
+                 }
+-                printf("SWEET GPU: t58: C write -> dtcm %#x %#x %#x %#x host=%#x fsr=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: C write -> dtcm %#x %#x %#x %#x host=%#x fsr=%#x sgfsr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     hfi_mem ? ((volatile uint32_t *)hfi_mem)[0x0F00 / 4] : 0,
+@@ -1514,7 +1581,7 @@
+                  * processes translation requests. */
+                 gpu_smmu_cfg(sm, sm_page, cbb1, 1ull << 48, smr_all, 1u, true);
+                 gpu_cm3_run(gmu5, gputest_prog, 15, 20);
+-                printf("SWEET GPU: t58: E invalid ttbr -> dtcm %#x %#x %#x %#x fsr=%#x far=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: E invalid ttbr -> dtcm %#x %#x %#x %#x fsr=%#x far=%#x sgfsr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, cbb1 + 0x60u),
+@@ -1522,7 +1589,7 @@
+ 
+                 gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 2u << 16u | 1u, true);
+                 gpu_cm3_run(gmu5, gputest_prog, 15, 20);
+-                printf("SWEET GPU: t58: D fault probe -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: D fault probe -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
+@@ -1531,16 +1598,16 @@
+                  * only brought CX on.  Power GX and re-run the two reads that
+                  * matter, so a change is attributable. */
+                 uint32_t gx0 = gpu_rd(gpucc, GPUCC_GX_GDSCR);
+-                printf("SWEET GPU: t58: gx_gdscr=%#x gx_domain=%#x gx_gmu=%#x\n",
++                printf("SWEET GPU: t59: gx_gdscr=%#x gx_domain=%#x gx_gmu=%#x\n",
+                     gx0, gpu_rd(gpucc, GPUCC_GX_DOMAIN_ADDR), gpu_rd(gpucc, GPUCC_GX_GMU_CBCR));
+                 if (gx0 & GDSC_HW_CONTROL) {
+-                        printf("SWEET GPU: t58: GX under hardware control; not touching it\n");
++                        printf("SWEET GPU: t59: GX under hardware control; not touching it\n");
+                 } else if (!(gx0 & GDSC_POWER_ON)) {
+                         gpu_wr(gpucc, GPUCC_GX_GDSCR, gx0 & ~GDSC_SW_COLLAPSE);
+                         for (int i = 0; i < 100 && !(gpu_rd(gpucc, GPUCC_GX_GDSCR) & GDSC_POWER_ON); i++) {
+                                 gpu_wait(1);
+                         }
+-                        printf("SWEET GPU: t58: gx after gdsc=%#x gx_domain=%#x\n",
++                        printf("SWEET GPU: t59: gx after gdsc=%#x gx_domain=%#x\n",
+                             gpu_rd(gpucc, GPUCC_GX_GDSCR), gpu_rd(gpucc, GPUCC_GX_DOMAIN_ADDR));
+                         uint32_t gxc = gpu_rd(gpucc, GPUCC_GX_GMU_CBCR);
+                         if (!(gxc & CBCR_ENABLE)) {
+@@ -1549,28 +1616,28 @@
+                         for (int i = 0; i < 20 && (gpu_rd(gpucc, GPUCC_GX_GMU_CBCR) & CBCR_OFF); i++) {
+                                 gpu_wait(1);
+                         }
+-                        printf("SWEET GPU: t58: gx_gmu=%#x\n", gpu_rd(gpucc, GPUCC_GX_GMU_CBCR));
++                        printf("SWEET GPU: t59: gx_gmu=%#x\n", gpu_rd(gpucc, GPUCC_GX_GMU_CBCR));
+                 } else {
+-                        printf("SWEET GPU: t58: GX already powered; not touching it\n");
++                        printf("SWEET GPU: t59: GX already powered; not touching it\n");
+                 }
+                 /* t58: the GX-side GBIF halt, next to the CX ack that never
+                  * clears at 0x2c0f118.  GX is on now, so RBBM should answer. */
+                 vm_offset_t rbbm = ml_io_map(0x02c00000u, 0x1000);
+                 if (rbbm) {
+                         uint32_t rh = gpu_rd(rbbm, 0x58u), ra = gpu_rd(rbbm, 0x5cu);
+-                        printf("SWEET GPU: t58: rbbm gbif halt=%#x ack=%#x\n",
++                        printf("SWEET GPU: t59: rbbm gbif halt=%#x ack=%#x\n",
+                             rh, ra);
+                         gpu_wr(rbbm, 0x58u, 0);
+                         gpu_wait(2);
+-                        printf("SWEET GPU: t58: rbbm gbif after halt=%#x ack=%#x\n",
++                        printf("SWEET GPU: t59: rbbm gbif after halt=%#x ack=%#x\n",
+                             gpu_rd(rbbm, 0x58u), gpu_rd(rbbm, 0x5cu));
+                 } else {
+-                        printf("SWEET GPU: t58: rbbm map failed\n");
++                        printf("SWEET GPU: t59: rbbm map failed\n");
+                 }
+ 
+                 gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u << 16u, false);
+                 gpu_cm3_run(gmu5, map, 19, 20);
+-                printf("SWEET GPU: t58: A2 bypass map after gx -> dtcm %#x %#x %#x %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: A2 bypass map after gx -> dtcm %#x %#x %#x %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 16), gpu_rd(gmu5, GMU_DTCM_WINDOW + 20),
+@@ -1578,7 +1645,7 @@
+                     gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
+                 gpu_smmu_cfg(sm, sm_page, cbb1, tcb, smr_all, 1u, true);
+                 gpu_cm3_run(gmu5, gputest_prog, 15, 20);
+-                printf("SWEET GPU: t58: B2 translate after gx -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
++                printf("SWEET GPU: t59: B2 translate after gx -> dtcm %#x %#x %#x %#x fsr=%#x sgfsr=%#x\n",
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW), gpu_rd(gmu5, GMU_DTCM_WINDOW + 4),
+                     gpu_rd(gmu5, GMU_DTCM_WINDOW + 8), gpu_rd(gmu5, GMU_DTCM_WINDOW + 12),
+                     gpu_rd(sm, cbb1 + SMMU_CB_FSR), gpu_rd(sm, SMMU_SGFSR));
+@@ -1616,7 +1683,7 @@
+                 gpu_wr(gmu5, GMU_SYS_BUS_CONFIG, 1);
+                 gpu_wr(gmu5, GMU_ICACHE_CONFIG, 1);
+                 gpu_wr(gmu5, GMU_DCACHE_CONFIG, 1);
+-                printf("SWEET GPU: t58: firmware TCM restored, all-match SMR -> context 1, releasing\n");
++                printf("SWEET GPU: t59: firmware TCM restored, all-match SMR -> context 1, releasing\n");
+                 gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);
+         } else {
+                 gpu_wr(gmu5, GMU_CM3_SYSRESET, 0);

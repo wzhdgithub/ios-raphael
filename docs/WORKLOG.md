@@ -1028,3 +1028,12 @@ Stage Summary:
 - 常规 A/B0/B/C/E/D、A2/B2、固件释放、fw_init。
 - 工程：0138 与整系列重放逐字节一致。
 
+---
+
+## Task 71 (r69/t59) — 发现 HeliumStudio 的 raphael GPU 实现（FD640 已验证）→ t59 采用其厂测值（2026-10-28）
+
+**发现**：`HeliumStudio-Dev/hackios-xnu-kernel`（分支 `raphael-bringup`）README 记录 raphael 上 **FD640 三角形 1080×2340 绘制+读回成功、GL error 0**；`xnu/files/bsd/dev/hakios.adreno.c`（178 KB，22 步）在 `a640=hakios_is_raphael()` 时重映射 GMU 0x2c6a000 / SMMU 0x2ca0000 / GBIF 0x2c0f000 / RSCC 0x2c8d000，并带有 PDC/RSCC 的 a640 程序、cmd_db 地址解析、CB ACTLR=0x303、chipid 0x06040100、fence 0x80A008A0、zap/PAS 顺序，以及 HFI→3D core→CP→出图全过程；配套 `hakios.gpu.cpp`、Mesa/freedreno 补丁与 EAGL 用户态源码（GLES 库需自建）。
+
+**0139（t59）**：把上述 raphael 厂测值搬进我们驱动——cmd_db 解析 BCM 地址（mx/cx/xo.lvl）替换硬编码、`gpu_smmu_cfg` 写 CB ACTLR=0x303、HFI_SFR_ADDR=0x06040100、fence=0x80A008A0；保留 B0/B/C/E/D 与固件释放判别。
+- 后续路线：本轮验证后，按计划移植其完整内核驱动 + IOKit 服务，并以其实测过的 Mesa/EAGL 方案构建 GLES 用户态。
+
