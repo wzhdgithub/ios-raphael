@@ -13,7 +13,7 @@ diff --git a/bsd/dev/hakios.adreno.c b/bsd/dev/hakios.adreno.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hakios.adreno.c
-@@ -0,0 +1,4250 @@
+@@ -0,0 +1,4236 @@
 +/*
 + * The GPU of the POCO X5 Pro (redwood), an Adreno 642L, woken step by step up to a picture that
 + * it fills and the panel shows. Every address below belongs to this phone, and nothing here is
@@ -133,22 +133,8 @@ new file mode 100644
 + * embedded a640 firmware, and no-op stubs for the parts this port does not use yet
 + * (loader return, display present, IOKit GPU service, tracing).
 + */
-+static int hk_sleep_chan;
-+
-+static void
-+sleep_us(uint32_t us)
-+{
-+        uint64_t deadline;
-+        clock_interval_to_deadline(us / 1000 + 1, NSEC_PER_MSEC, &deadline);
-+        (void)assert_wait_deadline(&hk_sleep_chan, THREAD_UNINT, deadline);
-+        thread_block(THREAD_CONTINUE_NULL);
-+}
-+
-+static void
-+sleep_ms(uint32_t ms)
-+{
-+        sleep_us(ms * 1000);
-+}
++/* Defined further down; the core's progress poll above needs it first. */
++bool hakios_gpu_done(uint32_t fence);
 +
 +void loader_log_putc(char c) { (void)c; }
 +uint64_t loader_framebuffer;
