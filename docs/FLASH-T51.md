@@ -38,3 +38,21 @@ fastboot boot raphael-t50-scan-debug.img
 第一次构建（run 40443623266）在 `Guard - no silently skipped patches` 失败：0131 被跳过。
 原因：0131 当时是对着**包含未入库 0129** 的本地文件生成的，而 CI 树是 0103…0128 + 0130（没有 0129），
 上下文不匹配。已按真实 CI 树（0103…0130）重建基线并重新生成 0131；`patch -p1 --dry-run` 通过。
+
+## 实机结果（2026-10-27 11:44—12:00）
+
+镜像 `raphael-t51-extpath-debug.img`（sha256 488aded3…）已 `fastboot boot`，日志 232,862 B / flush #130。
+
+30 组全部失败，且**数据完全一致**：
+
+| 组 | w0 | w1 | w2 | w3 |
+|---|---|---|---|---|
+| cb=0–4 × smr=0–2 × icfg=0（15 组） | deadbeef | 0 | 0x11 | 0 |
+| cb=0–4 × smr=0–2 × icfg=1（15 组） | deadbeef | 0 | 0 | 0 |
+
+- `icfg` 是本轮写进 `GMU_ICACHE_CONFIG`/`GMU_DCACHE_CONFIG` 的实际值；写 1 时外部读会把 CM3 挂住（连 DTCM[2] 都写不到），写 0 时返回 0 后继续。
+- 5 个 CB 的 FSR 全部 0x400（FSR.FORMAT=2 常量），**没有任何 fault 位**，SGFSR=0。
+- **测试缺陷**：15 字程序的 HFI 读取指令立即数应为 #0x24（0x4909），0131 写成了 #0x28（0x490A），实际读取 ICACHE 0x4100。故 w1 不是 HFI 页的读数。
+- **遗漏**：从未启用 `gpu_cc_hlos1_vote_gpu_smmu_clk`（GPUCC 0x5000）。
+
+结论：t51 未建立“外部通路好坏”的判据；SMMU 侧既无 fault 也无成功证据。进入 t52（0132）做时钟投票 + 故障注入判别。

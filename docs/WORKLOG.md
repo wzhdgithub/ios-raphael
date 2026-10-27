@@ -876,3 +876,28 @@ Stage Summary:
 **工程**：0131 对 0130 终态 `patch -p1 --dry-run` 通过；push 自动触发 CI（不手动 dispatch）。
 
 **修正**：首个 t51 构建（run 40443623266）的 `Guard` 步骤发现 0131 被跳过——0131 误对着含未入库 0129 的本地文件生成。已用仓库 patch 序列重建真实基线（0103…0128+0130）并重新生成 0131，dry-run 通过后重新推送。
+
+---
+
+## Task 63 (r62/t52) — t51 实机判读：30 组全败 + 两个测试缺陷；t52 故障注入（2026-10-27）
+
+**t51（0131）实机**：run 40444792790 成功（Guard 通过），镜像 11:44 boot，10:53 拉回日志 232,862 B / flush #130。
+30 组 `scan cb=0..4 smr=0..2 icfg=0/1` 全部 `0xdeadbeef 0 0x11|0 0`：
+- w0=deadbeef：ITCM 程序必执行；
+- w1=0：外部读恒为 0；
+- w3=0：ICACHE 取指从未成功；
+- icfg=1（ICACHE/DCACHE 配置寄存器写 1）时核心连 DTCM[2]=0x11 都写不到（外部读挂起）；icfg=0 时读返回 0、核心继续到 blx；
+- 5 个 CB 的 FSR 全 0x400（FSR.FORMAT=2 的常量），无 TF/PF/EF 等 fault 位；SGFSR=0。
+
+**两个测试缺陷（关键）**：
+1. 15 字 gputest 的 HFI 读取指令立即数写的是 #0x28（0x490A）→ 实际读取 ICACHE 0x4100（例程自身首字），不是 HFI 页 0x60006F00；t51 的 w1 并非 HFI 外部通路结果。0132 改为 #0x24（0x4909）。
+2. 我方从未给 SMMU 投时钟：`gpu_cc_hlos1_vote_gpu_smmu_clk`（GPUCC 0x5000）从未启用；HackiOS 的每个 GPU 步骤都先投此票。0132 在 stage1 打开并打印。
+
+**0132（t52）**：
+- stage1 增加 smmu_vote(0x5000) 投票；
+- 修正 HFI 读取；
+- 新增 CM3→宿主写方向测试（CM3 写 0xFEEDFACE 到 HFI 页，主机读回）；
+- 新增故障注入：CB1 指向全零页表，SID ∈ {5,4,0,1,2} 各跑一次读程序；FSR 出现 bit1(TF) = CM3 事务确实经过 SMR/CB 与我们的页表；FSR 仍 0x400 = 事务不经本 SMMU 流表（hyp 托管或旁路）；
+- AHB fence 改用 Linux a640 值 0x802800a0（此前为 HackiOS a650 的 0x80a008a0）。
+
+**工程**：0132 对 0131 终态 diff，`patch -p1 --dry-run` 通过；commit b9857a2 push fork/main，自动触发唯一 run 40448105892。
