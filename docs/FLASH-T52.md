@@ -31,3 +31,13 @@
 ```
 fastboot boot raphael-t51-extpath-debug.img
 ```
+
+## 实机结果（2026-10-27 12:18 boot，log 233,120 B / flush #145）
+
+- `stage1: smmu_vote=0x1 running` — SMMU 时钟投票成功，但**不解决**问题。
+- 30 组扫描（HFI 读地址已修正）全部 `0xdeadbeef 0 0 0`：读 0x60006F00（非缓存窗口）在 cfg=0/1 下都会挂住 CM3；t51 的 `w2=0x11` 只是读错地址（ICACHE 0x4100）的产物。
+- 写测试：`host sees 0xabcd0001`（未被改写）、`dtcm0=0` → CM3 的写也**永远不完成**。
+- 故障注入（CB1 全零页表；SID 5/4/0/1/2）：全部 `fsr=0x400 sgfsr=0`，核心均挂在访存 → **无任何 translation fault 证据**；CM3 事务要么不经本 SMMU 流表，要么到不了有响应的从设备。
+- AHB fence 用 a640 上游值无影响。
+
+结论：外部（0x60000000 非缓存）窗口的读写都不完成，且不产生 SMMU fault。进入 t53 做流表/旁路/故障三判别并直接尝试真固件。

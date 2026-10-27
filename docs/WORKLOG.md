@@ -901,3 +901,18 @@ Stage Summary:
 - AHB fence 改用 Linux a640 值 0x802800a0（此前为 HackiOS a650 的 0x80a008a0）。
 
 **工程**：0132 对 0131 终态 diff，`patch -p1 --dry-run` 通过；commit b9857a2 push fork/main，自动触发唯一 run 40448105892。
+
+---
+
+## Task 64 (r63/t53) — t52 判读：非缓存窗口读写均不完成；t53 三判别 + 真固件直启（2026-10-27）
+
+**t52（0132）实机**（12:18 boot，log 233,120 B / flush #145）：
+- `smmu_vote=0x1 running`：SMMU 时钟投票成功，但不是阻塞点；
+- 30 组扫描（HFI 读地址修正后）全部 `deadbeef 0 0 0`——读 0x60006F00 在任何缓存配置下都挂住 CM3（t51 的 `w2=0x11` 是读错地址 0x4100 的假象）；
+- 写方向测试：CM3 写 0xFEEDFACE 到 HFI 页不落地，DTCM[0] 也未写 → 非缓存窗口的写同样永远不完成；
+- 故障注入（CB1 全零页表，SID 5/4/0/1/2）：全部 `fsr=0x400 sgfsr=0`，核心均挂在访存 → 无 translation fault 证据；
+- AHB fence 改 a640 上游值 0x802800a0 无影响。
+
+**0133（t53）**：test 0 全匹配 SMR→CB1 读 HFI；test 1 全 BYPASS 读已知 MMIO（SMMU IDR0 0x02ca0020=0x4c017e06、GMU CM3_CFG 0x02c7e0b4=0x4052）判断 GMU AHB 主口；test 2 全 FAULT 看 SGFSR；test 3 写方向；最后恢复真固件 TCM、保留全匹配 SMR→CB1 直接释放 CM3 轮询 fw_init。
+
+**工程**：0133 对 0132 终态 dry-run 通过；commit 4eea68c → run 40450361109。
