@@ -942,3 +942,26 @@ Stage Summary:
 - stage6 转储扩为 tbu0 + tbu1。
 - 工程：0134 对 0133 终态 diff，重放整系列后逐字节一致；commit/push fork。
 
+---
+
+## Task 66 (r65/t55) — t54 判读：BYPASS 通、TRANSLATE/FAULT 挂死；t55 解除 QSMMU TCU halt（2026-10-27）
+
+**t54（0134）实机**（13:30 boot，log 645,904 B / flush #4561；HFI 页 PA=0x1d9228f00 >4 GB，探针回退读 IDR0）：
+- A BYPASS 探针 `dtcm 0x11 0xdeadbeef 0x22 0xdeadbeef`：**外部读完成**（两处标记均写达），值 0xdeadbeef（非 IDR0 的 0x4c017e06）；
+- B CB1 翻译 `deadbeef 0 0 0`；C 写（host 种 0xabcd0001）`0 0 0 0` host 不变；D FAULT `sgfsr=0`：翻译/写/fault 全挂；
+- GX GDSC 由 0x222001 上电为 0x8222000、gx_gmu 运行，A2/B2 无变化；
+- GBIF `halt=0 ack=0x3`，写 HALT=0 / 写 ACK 后不变；
+- 固件 `fw_init=0`、`stage6=FAIL`。
+
+**结论**：AHB 通路在 BYPASS 下可完成（TBU 放行到 NoC），TRANSLATE/FAULT 下 TBU 转发后 **TCU 从不回应** → 问题缩到 SMMU 翻译引擎。
+
+**vendor 机制**：`qsmmuv2_device_reset()` 固定 halt(IMPL_DEF1 0x02CA6000 bit2) → 写 impl-def → resume(清 bit2)；等 bit3=IDLE。我们的驱动从未碰过该寄存器；若 bootloader 留下 halt，BYPASS 仍通、翻译全挂——与 t54 完全一致。
+
+**0135（t55）**：
+- AP 读/清 0x02CA6000（halt_req/idle），未 halt 则做一次 halt→resume 环；
+- A：BYPASS 下 CM3 依次读 GMU CM3_CFG、GPUCC CX_GDSCR、SMMU IDR0、SMMU IMPL_DEF1 → DTCM[1..4]（16 字探针），定位哪些从设备有响应、0xdeadbeef 出现在哪；
+- B 翻译读 HFI；C 写方向（0xabcd0001→feedface）；D FAULT；
+- GX 上电后 A2/B2；恢复固件 TCM、释放 CM3、轮询 fw_init；
+- 判读：bit2=1 → 根因确认；resume 后 B 读到 feedface → 翻译通，固件有望 0xBABEFACE。
+- 工程：0135 与整系列重放逐字节一致；push fork 自动触发唯一 run。
+
