@@ -1,0 +1,58 @@
+diff --git a/bsd/dev/hakios.adreno.c b/bsd/dev/hakios.adreno.c
+--- a/bsd/dev/hakios.adreno.c
++++ b/bsd/dev/hakios.adreno.c
+@@ -125,6 +125,7 @@
+ uint64_t loader_framebuffer;
+ void loader_set_framebuffer(uint64_t phys) { (void)phys; }
+ void loader_return(void) { }
++static void sleep_ms(uint32_t ms);
+ /* Step 22 hands us the GPU-drawn picture; put it on the panel through the
+  * boot framebuffer the display driver published (PE_current_console). */
+ void MiniIOMobileFramebufferShow(const uint8_t *pixels, uint32_t width, uint32_t height,
+@@ -136,19 +137,28 @@
+         PE_current_console(&video);
+         if (video.v_baseAddr == 0 || video.v_rowBytes == 0 || pixels == NULL ||
+             width == 0 || height == 0) {
++                printf("SWEET GPU: no boot framebuffer to show the picture on (%#llx, rows of %u)\n",
++                    (unsigned long long)video.v_baseAddr, (unsigned)video.v_rowBytes);
+                 return;
+         }
+         w = width < (uint32_t)video.v_width ? width : (uint32_t)video.v_width;
+         h = height < (uint32_t)video.v_height ? height : (uint32_t)video.v_height;
++        printf("SWEET GPU: the boot framebuffer is at %#llx, %ux%u, rows of %u; the picture is %ux%u rows of %u: %ux%u "
++            "to copy\n", (unsigned long long)video.v_baseAddr, (unsigned)video.v_width,
++            (unsigned)video.v_height, (unsigned)video.v_rowBytes, width, height, row_bytes, w, h);
+         vm_offset_t fb = ml_io_map_wcomb((vm_offset_t)video.v_baseAddr,
+             (vm_size_t)video.v_rowBytes * video.v_height);
+         if (fb == 0) {
++                printf("SWEET GPU: the boot framebuffer does not map\n");
+                 return;
+         }
++        printf("SWEET GPU: the boot framebuffer is at %#lx in this processor's map\n", (unsigned long)fb);
++        sleep_ms(2200);         /* let the log reach the phone's storage before the copy */
+         for (uint32_t y = 0; y < h; y++) {
+                 memcpy((void *)(fb + (vm_offset_t)y * video.v_rowBytes),
+                     pixels + (size_t)y * row_bytes, (size_t)w * 4);
+         }
++        printf("SWEET GPU: the picture is written into the framebuffer\n");
+ }
+ void hakios_tl(const char *format, ...) { (void)format; }
+ void HakiosGPUStart(void) { }
+@@ -3195,6 +3205,8 @@
+ 		    rd(gpu.base + RBBM_STATUS), rd(gpu.base + CP_RB_RPTR));
+ 		return true;
+ 	}
++	printf("adreno: %u: about to write the picture's 10 MB back out of this processor's caches and read it\n", step);
++	hold(true);
+ 	to_memory(core_scratch.memory, 64);
+ 	printf("adreno: %u: the words it writes when its caches are in memory: %#x, %#x (told: 0xc0c0c0c, 0xd0e0d0e)\n", step,
+ 	    ((volatile uint32_t *)core_scratch.memory)[8], ((volatile uint32_t *)core_scratch.memory)[4]);
+@@ -3210,6 +3222,8 @@
+ 		printf("adreno: %u: the picture is not what the 3D core was told to draw\n", step);
+ 		return false;
+ 	}
++	printf("adreno: %u: about to hand the picture to the boot framebuffer and the panel\n", step);
++	hold(true);
+ 	MiniIOMobileFramebufferShow((const uint8_t *)core_target.memory, TARGET_WIDTH, TARGET_HEIGHT, TARGET_ROW);
+ 	printf("adreno: %u: A PICTURE DRAWN BY THE GPU IS ON THE PANEL: orange, white, blue from the top\n", step);
+ 	return true;
