@@ -1,0 +1,20 @@
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -46,6 +46,17 @@
+ 
+ 	/* Kernel address of the pixels (mapped on first use), or 0. */
+ 	uintptr_t kernelAddress();
++
++	/* The shared state page, as much of it as hakios.gpu.cpp reads: IOSurface.framework's own
++	 * layout (the seed at 0x0c changes when a program has written the pixels). */
++	struct sweet_surface_shared {
++		uint64_t registryID;            /* 0x00 */
++		uint16_t accelID, accelSubID;   /* 0x08 */
++		uint32_t seed;                  /* 0x0c */
++	};
++	sweet_surface_shared *shared() {
++		return state != NULL ? (sweet_surface_shared *)state->getBytesNoCopy() : NULL;
++	}
+ };
+ 
+ /* Retained surface for an id, or NULL. */
