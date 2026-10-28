@@ -1,0 +1,15 @@
+diff --git a/bsd/dev/hakios.adreno.c b/bsd/dev/hakios.adreno.c
+--- a/bsd/dev/hakios.adreno.c
++++ b/bsd/dev/hakios.adreno.c
+@@ -146,8 +146,10 @@
+         printf("SWEET GPU: the boot framebuffer is at %#llx, %ux%u, rows of %u; the picture is %ux%u rows of %u: %ux%u "
+             "to copy\n", (unsigned long long)video.v_baseAddr, (unsigned)video.v_width,
+             (unsigned)video.v_height, (unsigned)video.v_rowBytes, width, height, row_bytes, w, h);
++        sleep_ms(1500);         /* let the log reach the phone's storage before the map */
++        /* pmap_map_bd, behind ml_io_map_wcomb, takes page-aligned ranges only. */
+         vm_offset_t fb = ml_io_map_wcomb((vm_offset_t)video.v_baseAddr,
+-            (vm_size_t)video.v_rowBytes * video.v_height);
++            round_page((vm_size_t)video.v_rowBytes * video.v_height));
+         if (fb == 0) {
+                 printf("SWEET GPU: the boot framebuffer does not map\n");
+                 return;
