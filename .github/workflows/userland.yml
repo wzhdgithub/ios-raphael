@@ -1,0 +1,68 @@
+name: userland
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "userland/**"
+      - "tools/mesa/**"
+      - "tools/mk-mesa.sh"
+      - "xnu-deps/**"
+      - "xnu-env.sh"
+      - ".github/workflows/userland.yml"
+
+concurrency:
+  group: userland-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  THEOS: ${{ github.workspace }}/xnu-deps/theos-mac
+
+jobs:
+  mesa:
+    runs-on: macos-14-arm64
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SDK (iPhoneOS 16.5, github.com/theos/sdks)
+        run: |
+          mkdir -p xnu-deps/theos-mac/sdks
+          rm -rf "$RUNNER_TEMP/sdks"
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$RUNNER_TEMP/sdks"
+          git -C "$RUNNER_TEMP/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          ln -s "$RUNNER_TEMP/sdks/iPhoneOS16.5.sdk" xnu-deps/theos-mac/sdks/iPhoneOS16.5.sdk
+          ls xnu-deps/theos-mac/sdks/iPhoneOS16.5.sdk | head
+
+      - name: tools (meson, ninja, bison, flex, llvm-ar)
+        run: |
+          brew install -q meson ninja bison flex || true
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          echo "$(dirname "$(xcrun -f llvm-ar)")" >> "$GITHUB_PATH"
+          bison --version | head -1; flex --version; meson --version; ninja --version
+
+      - name: build Mesa (libOSMesa.8.dylib: softpipe + freedreno)
+        run: |
+          chmod +x xnu-deps/host/bin/xnu-clang xnu-deps/host/bin/xnu-clang++ tools/mk-mesa.sh
+          bash tools/mk-mesa.sh
+
+      - name: build gl_test
+        run: |
+          M=xnu-deps/build/mesa/out
+          chmod +x xnu-deps/host/bin/xnu-clang
+          xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot "$THEOS/sdks/iPhoneOS16.5.sdk" -O1 \
+            -framework CoreFoundation -framework IOKit -o gl_test userland/src/gl_test.c "$M/libOSMesa.8.dylib"
+          file gl_test "$M/libOSMesa.8.dylib"
+          ls -la gl_test "$M"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: userland-gl
+          path: |
+            xnu-deps/build/mesa/out/libOSMesa.8.dylib
+            xnu-deps/build/mesa/out/exported-gl.txt
+            xnu-deps/build/mesa/out/gl.xml
+            gl_test
+          if-no-files-found: error
