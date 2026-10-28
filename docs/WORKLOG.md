@@ -1047,3 +1047,12 @@ Stage Summary:
 - 判读：出现 `THE GMU'S FIRMWARE RUNS` 即其 raphael 启动路径在本内核成立；失败则按 step 13/14 日志找差异。
 - 工程：0140 的 sweet_gpu.c 与新文件重放校验通过；conf/files hunk 上下文与 0103 一致（CI 验证）。
 
+---
+
+## Task 73 (r71/t61 + r72/t62) — t60 判读（M3 达成：GMU 固件运行）→ t61 adreno=17 → t62 zap/SQE/显示冲刺（2026-10-28）
+
+**t60（0140）实机**（03:30 boot，log 670,337 B / flush #5603）：移植驱动跑通 step 1–9、13、14、15；频率计实测 AHB ≈46–49 MHz；step 13 整段映射 ICACHE/DCACHE 并配置 CB1（ACTLR 0x303、CBAR 0x1f300、TLBIASID/TLBSYNC，回读 sctlr=0x27/tcr2=0x38071）；step 14 按块加载固件；step 15 写 PDC/RSCC（cmd_db 地址）、HFI 表、fence、chipid 并释放 CM3 → **fw_init=0xBABEFACE，THE GMU'S FIRMWARE RUNS**；20 s 心跳后干净清理，系统继续启动。**M3 完成（总进度 36%）**。
+
+**t61**：免编译 repack（adreno=15→17），镜像 raphael-t61-hfi-debug.img，10:42 boot；等 TWRP 拉日志看 step 16/17。
+**t62（0141）**：内嵌 a640_zap.mdt/.b02 + a630_sqe.fw，`MiniIOMobileFramebufferShow` 接到启动 framebuffer；cmdline adreno=22，目标 step 18–22 首次 GPU 出图（`A PICTURE DRAWN BY THE GPU IS ON THE PANEL`）。
+
