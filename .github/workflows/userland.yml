@@ -43,7 +43,7 @@ jobs:
           echo "$(dirname "$(xcrun -f llvm-ar)")" >> "$GITHUB_PATH"
           bison --version | head -1; flex --version; meson --version; ninja --version
 
-      - name: build Mesa (libOSMesa.8.dylib: softpipe + freedreno)
+      - name: "build Mesa (libOSMesa.8.dylib, softpipe + freedreno)"
         run: |
           chmod +x xnu-deps/host/bin/xnu-clang xnu-deps/host/bin/xnu-clang++ tools/mk-mesa.sh
           bash tools/mk-mesa.sh
