@@ -1,0 +1,121 @@
+diff --git a/bsd/dev/hakios.adreno.c b/bsd/dev/hakios.adreno.c
+--- a/bsd/dev/hakios.adreno.c
++++ b/bsd/dev/hakios.adreno.c
+@@ -2726,14 +2726,23 @@
+ static bool
+ ring_run(const char *what)
+ {
+-	uint32_t taken = ~0u, status = ~0u;
++	uint32_t taken = ~0u, status = ~0u, context = smmu_context(&core_space);
++	bool refused = false;
+ 
+ 	printf("adreno: %u: about to have the 3D core %s: the ring up to word %u\n", step, what, ring_at);
+ 	snprintf(last_write, sizeof(last_write), "step %u had the 3D core %s", step, what);
+ 	hold(true);
+ 	ring_send();
++	printf("adreno: %u: about to read the ring's read position; the GPU block's registers may stop answering here\n", step);
+ 	for (int i = 0; i < 20000 && (taken != ring_at || (status & ~1u)); i++) {
+ 		sleep_us(100);
++		/* The SMMU's record first, and at once: its registers are the SoC's, not the GPU block's,
++		 * so this still answers while the GPU's do not; a refused request is the reason the core
++		 * stopped, and is worth more than the poll that follows. */
++		if (!refused && (rd(smmu.base + context + SMMU_CB_FSR) & SMMU_FSR_ALL)) {
++			space_faulted(&core_space);
++			refused = true;
++		}
+ 		taken = rd(gpu.base + CP_RB_RPTR);
+ 		status = rd(gpu.base + RBBM_STATUS);
+ 	}
+@@ -3082,7 +3091,7 @@
+ extern void MiniIOMobileFramebufferShow(const uint8_t *pixels, uint32_t width, uint32_t height, uint32_t row_bytes);
+ 
+ static void
+-ring_fill(uint32_t top, uint32_t bottom, uint32_t red, uint32_t green, uint32_t blue)
++ring_fill(uint32_t top, uint32_t bottom, uint32_t red, uint32_t green, uint32_t blue, bool blit)
+ {
+ 	ring_register(GRAS_2D_DST_TL, top << 16);
+ 	ring_register(GRAS_2D_DST_BR, (TARGET_WIDTH - 1) | (bottom - 1) << 16);
+@@ -3098,19 +3107,29 @@
+ 	ring_register(RB_2D_DST, CORE_TARGET_ADDRESS);
+ 	ring_register(RB_2D_DST + 1, 0);
+ 	ring_register(RB_2D_DST_PITCH, TARGET_ROW >> 6);
+-	ring_command(CP_WAIT_FOR_IDLE, 0);
+-	ring_command(CP_BLIT, 1);
+-	ring(3);                                /* "scale": the 2D engine's one operation */
++	if (blit) {
++		ring_command(CP_WAIT_FOR_IDLE, 0);
++		ring_command(CP_BLIT, 1);
++		ring(3);                        /* "scale": the 2D engine's one operation */
++	}
+ }
+ 
+ static bool
+ step_frame(void)
+ {
+ 	const volatile uint8_t *pixel;
++	uint32_t frame = 0, bands;
+ 
+ 	if (!cx_ready() || !core_runs) {
+ 		return false;
+ 	}
++	/*
++	 * adreno_frame=N walks this step in stages, so that a core that stops on one of them says
++	 * which: 1 only the marker and the caches' setting, 2 and the 2D registers, 3 and one
++	 * band's blit, 4 and the two cache events, 5 the whole ring without reading the memory
++	 * back; 0 (the default) the whole step.
++	 */
++	PE_parse_boot_argn("adreno_frame", &frame, sizeof(frame));
+ 	announce("make a picture's worth of memory for the 3D core (10 MB) and have it fill three bands of colour");
+ 	if (!block_new(&core_space, &core_target, CORE_TARGET_ADDRESS, TARGET_ROW * TARGET_HEIGHT, PTE_CORE)) {
+ 		return false;
+@@ -3122,9 +3141,35 @@
+ 	ring_command(CP_SET_MARKER, 1);
+ 	ring(12);                               /* "2D blits follow" */
+ 	ring_register(RB_CCU_CNTL, 0x10000004); /* Mesa's for this GPU when it draws straight into memory */
+-	ring_fill(0, 800, 255, 128, 0);         /* orange */
+-	ring_fill(800, 1600, 255, 255, 255);
+-	ring_fill(1600, TARGET_HEIGHT, 0, 128, 255);
++	if (frame == 1) {
++		ring_command(CP_WAIT_FOR_IDLE, 0);
++		if (!ring_run("take the marker and the caches' setting alone")) {
++			return false;
++		}
++		printf("adreno: %u: FRAME STAGE 1 (marker and caches) DONE\n", step);
++		return true;
++	}
++	bands = frame == 0 || frame == 5 ? 3 : 1;
++	ring_fill(0, 800, 255, 128, 0, frame != 2);     /* orange */
++	if (bands > 1) {
++		ring_fill(800, 1600, 255, 255, 255, true);
++		ring_fill(1600, TARGET_HEIGHT, 0, 128, 255, true);
++	}
++	if (frame == 2) {
++		ring_command(CP_WAIT_FOR_IDLE, 0);
++		if (!ring_run("take the 2D registers alone")) {
++			return false;
++		}
++		printf("adreno: %u: FRAME STAGE 2 (2D registers, no blit) DONE\n", step);
++		return true;
++	}
++	if (frame == 3) {
++		if (!ring_run("fill one band with the 2D engine")) {
++			return false;
++		}
++		printf("adreno: %u: FRAME STAGE 3 (one band's blit, no events) DONE\n", step);
++		return true;
++	}
+ 	/*
+ 	 * What it has drawn out of its caches into memory. Each of the two events is followed by an
+ 	 * address and a word that the core writes there when it is done (Linux's a6xx_submit; Mesa's
+@@ -3144,6 +3189,11 @@
+ 	ring_command(CP_WAIT_FOR_IDLE, 0);
+ 	if (!ring_run("fill a picture")) {
+ 		return false;
++	}
++	if (frame == 4 || frame == 5) {
++		printf("adreno: %u: FRAME STAGE %u (blit and events) DONE: status %#x, ring read up to %u\n", step, frame,
++		    rd(gpu.base + RBBM_STATUS), rd(gpu.base + CP_RB_RPTR));
++		return true;
+ 	}
+ 	to_memory(core_scratch.memory, 64);
+ 	printf("adreno: %u: the words it writes when its caches are in memory: %#x, %#x (told: 0xc0c0c0c, 0xd0e0d0e)\n", step,
