@@ -17,7 +17,7 @@ on:
         default: "true"
       runner:
         description: GitHub runner label (macos-14 or macos-14-arm64; both ship Xcode 15.4)
-        default: "macos-14"
+        default: "macos-14-arm64"
   push:
     branches: [main]
     paths:
