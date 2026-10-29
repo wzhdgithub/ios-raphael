@@ -267,7 +267,15 @@ main(int argc, char **argv)
 	OSMesaContext context;
 	int good = 0;
 
+	/* stdout is /dev/console here, not a terminal: unbuffered, so a machine
+	 * that stops during the GL work still leaves this trace in the log. */
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
+	printf("gl_test: begin\n");
+	sleep(2);
+	printf("gl_test: creating the OpenGL ES context\n");
 	context = OSMesaCreateContextAttribs(attributes, NULL);
+	printf("gl_test: context %s\n", context == NULL ? "none" : "created");
 	if (context == NULL || !OSMesaMakeCurrent(context, window, GL_UNSIGNED_BYTE, 16, 16)) {
 		printf("gl_test: no OpenGL ES context\n");
 		return 1;
@@ -315,9 +323,11 @@ main(int argc, char **argv)
 	glVertexAttribPointer(1, 3, GL_FLOAT, 0, 5 * sizeof(float), corners + 2);
 	glEnableVertexAttribArray(0);
 	glEnableVertexAttribArray(1);
+	printf("gl_test: drawing\n");
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	glFinish();
 	drew = now_ms();
+	printf("gl_test: drawn\n");
 
 	drawn = malloc((size_t)width * (size_t)height * 4);
 	shown = malloc((size_t)width * (size_t)height * 4);
@@ -325,8 +335,10 @@ main(int argc, char **argv)
 		return 1;
 	}
 	memset(drawn, 0x55, (size_t)width * (size_t)height * 4);
+	printf("gl_test: reading back\n");
 	glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, drawn);
 	read = now_ms();
+	printf("gl_test: read back\n");
 	/* the panel's rows go down and its pixels are blue first */
 	for (int y = 0; y < height; y++) {
 		const uint8_t *from = drawn + (size_t)(height - 1 - y) * (size_t)width * 4;
@@ -350,6 +362,7 @@ main(int argc, char **argv)
 	    (unsigned)(width * height), (unsigned)((uint64_t)coloured * 100 / (uint64_t)(width * height)));
 
 	service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosGPU"));
+	printf("gl_test: GPU service %u\n", (unsigned)service);
 	if (service == 0 || IOServiceOpen(service, mach_task_self(), 0, &connection) != 0) {
 		printf("gl_test: no GPU service in this kernel to put the picture on the panel with\n");
 		return 0;
