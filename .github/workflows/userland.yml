@@ -57,6 +57,20 @@ jobs:
           file gl_test "$M/libOSMesa.8.dylib"
           ls -la gl_test "$M"
 
+      # An exec'd binary without a code signature never gets CS_SIGNED, so XNU's
+      # process_signature() blocks in __EXEC_WAITING_ON_TASKGATED_CODE_SIGNATURE_UPCALL__
+      # forever on this port (no amfid): the whole machine stops. An ad-hoc signature
+      # reaches sweet_amfi_vnode_check_signature, which sets CS_SIGNED and skips that path.
+      - name: ad-hoc sign the two binaries
+        run: |
+          M=xnu-deps/build/mesa/out
+          codesign --force --sign - --timestamp=none gl_test
+          codesign --force --sign - --timestamp=none "$M/libOSMesa.8.dylib"
+          echo "--- gl_test"; codesign -dvvv gl_test 2>&1 | sed -n '1,8p'
+          echo "--- libOSMesa"; codesign -dvvv "$M/libOSMesa.8.dylib" 2>&1 | sed -n '1,8p'
+          otool -l gl_test | grep -A4 LC_CODE_SIGNATURE
+          ls -la gl_test "$M/libOSMesa.8.dylib"
+
       - uses: actions/upload-artifact@v4
         with:
           name: userland-gl
