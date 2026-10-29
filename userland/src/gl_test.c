@@ -299,6 +299,18 @@ main(int argc, char **argv)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	trace("begin");
+	if (stage == 0) {
+		/* liveness probe: the console may stop without the machine stopping,
+		 * so tick into the trace file once a second for two minutes. */
+		for (int tick = 0; tick < 120; tick++) {
+			char line[32];
+
+			snprintf(line, sizeof(line), "tick %d", tick);
+			trace(line);
+			sleep(1);
+		}
+		return 0;
+	}
 	if (stage < 2) {
 		return 0;
 	}
