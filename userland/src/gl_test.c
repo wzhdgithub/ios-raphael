@@ -21,16 +21,28 @@
 #include <unistd.h>
 
 /* Progress that survives the machine stopping: the console flusher lags, so
- * each stage also goes to this file and is fsync'd before the next one runs. */
+ * each stage also goes to its own fsync'd file before the next one runs. */
+static int trace_stage = 9;
+
 static void
 trace(const char *what)
 {
 	char line[256];
+	char path[64];
 	int fd, len;
+	static int quiet = -1;
 
-	printf("gl_test: %s\n", what);
+	if (quiet < 0) {
+		/* GL_TEST_QUIET=1: no console output at all, only the fsync'd file --
+		 * for when writing to /dev/console is what stops the machine. */
+		quiet = getenv("GL_TEST_QUIET") != NULL;
+	}
+	if (!quiet) {
+		printf("gl_test: %s\n", what);
+	}
 	len = snprintf(line, sizeof(line), "pid %d: %s\n", (int)getpid(), what);
-	fd = open("/private/var/gl_test.trace", O_WRONLY | O_CREAT |
+	snprintf(path, sizeof(path), "/private/var/gl_test.trace.%d", trace_stage);
+	fd = open(path, O_WRONLY | O_CREAT |
 	    (strcmp(what, "begin") == 0 ? O_TRUNC : O_APPEND), 0644);
 	if (fd >= 0 && len > 0) {
 		write(fd, line, (size_t)len);
@@ -293,9 +305,11 @@ main(int argc, char **argv)
 		stage = atoi(getenv("GL_TEST_STAGE"));
 	}
 
+	trace_stage = stage;
+
 	/* stdout is /dev/console here, not a terminal: unbuffered, and every stage
-	 * also fsync'd to /private/var/gl_test.trace so a machine that stops still
-	 * says how far it got. */
+	 * also fsync'd to /private/var/gl_test.trace.<stage> so a machine that
+	 * stops still says how far it got. */
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	trace("begin");
