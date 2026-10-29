@@ -55,6 +55,7 @@ cd "$B"
 sha256_stdin() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; }
 sha256_file() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
 stat_size() { if [ "$(uname)" = Darwin ]; then stat -f %z "$1"; else stat -c %s "$1"; fi; }
+if [ "$(uname)" = Darwin ]; then ARTOOL=ar; RANLIBTOOL=ranlib; STRIPTOOL=strip; else ARTOOL=llvm-ar; RANLIBTOOL=llvm-ranlib; STRIPTOOL=llvm-strip; fi
 PATCHES=$(cat "$ROOT"/tools/mesa/*.patch | sha256_stdin | cut -d' ' -f1)
 if [ ! -d mesa-$VERSION ] || [ "$(cat mesa-$VERSION/.hakios-patches 2>/dev/null)" != "$PATCHES" ]; then
 	[ -f mesa-$VERSION.tar.xz ] || curl -sL --fail -o mesa-$VERSION.tar.xz https://archive.mesa3d.org/mesa-$VERSION.tar.xz
@@ -84,9 +85,9 @@ cat > cross.ini <<INI
 c = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK']
 cpp = ['$CC++', '-arch', 'arm64', '-isysroot', '$SDK', '-fuse-cxa-atexit']
 objc = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK']
-ar = 'llvm-ar'
-ranlib = 'llvm-ranlib'
-strip = 'llvm-strip'
+ar = '$ARTOOL'
+ranlib = '$RANLIBTOOL'
+strip = '$STRIPTOOL'
 pkg-config = 'false'
 
 [host_machine]
@@ -101,14 +102,16 @@ needs_exe_wrapper = true
 INI
 DRIVERS=${DRIVERS:-softpipe,freedreno}
 BUILD=build-${DRIVERS//,/-}
-[ -f $BUILD/build.ninja ] || meson setup $BUILD mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
+if [ ! -f $BUILD/build.ninja ]; then
+	meson setup $BUILD mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
 	--prefix=/redwood --libdir=lib --buildtype=release -Db_ndebug=true \
 	-Dplatforms= -Dgallium-drivers="$DRIVERS" -Dfreedreno-kmds=msm -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled \
 	-Dosmesa=true -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=enabled -Dopengl=true \
 	-Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=disabled -Dvalgrind=disabled \
 	-Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-vdpau=disabled -Dgallium-va=disabled \
-	-Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false > meson-setup.log
-ninja -C $BUILD > ninja.log
+	-Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false > meson-setup.log 2>&1 || { tail -n 80 meson-setup.log; exit 1; }
+fi
+ninja -C $BUILD > ninja.log 2>&1 || { tail -n 120 ninja.log; exit 1; }
 # air_run draws with a translated Metal shader and reads the pixels back; it is
 # the only way to find out whether the Adreno takes work that did not come from
 # the window server. Built only when asked, since it is a test program.
