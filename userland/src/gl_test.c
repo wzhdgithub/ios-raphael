@@ -12,12 +12,32 @@
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
+#include <fcntl.h>
 #include <mach/mach_time.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* Progress that survives the machine stopping: the console flusher lags, so
+ * each stage also goes to this file and is fsync'd before the next one runs. */
+static void
+trace(const char *what)
+{
+	char line[256];
+	int fd, len;
+
+	printf("gl_test: %s\n", what);
+	len = snprintf(line, sizeof(line), "pid %d: %s\n", (int)getpid(), what);
+	fd = open("/private/var/gl_test.trace", O_WRONLY | O_CREAT |
+	    (strcmp(what, "begin") == 0 ? O_TRUNC : O_APPEND), 0644);
+	if (fd >= 0 && len > 0) {
+		write(fd, line, (size_t)len);
+		fsync(fd);
+		close(fd);
+	}
+}
 
 /* GL/osmesa.h and GLES2/gl2.h of Mesa, as far as they are used here */
 typedef struct osmesa_context *OSMesaContext;
@@ -267,19 +287,20 @@ main(int argc, char **argv)
 	OSMesaContext context;
 	int good = 0;
 
-	/* stdout is /dev/console here, not a terminal: unbuffered, so a machine
-	 * that stops during the GL work still leaves this trace in the log. */
+	/* stdout is /dev/console here, not a terminal: unbuffered, and every stage
+	 * also fsync'd to /private/var/gl_test.trace so a machine that stops still
+	 * says how far it got. */
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
-	printf("gl_test: begin\n");
-	sleep(2);
-	printf("gl_test: creating the OpenGL ES context\n");
+	trace("begin");
+	trace("creating the OpenGL ES context");
 	context = OSMesaCreateContextAttribs(attributes, NULL);
-	printf("gl_test: context %s\n", context == NULL ? "none" : "created");
+	trace(context == NULL ? "context none" : "context created");
 	if (context == NULL || !OSMesaMakeCurrent(context, window, GL_UNSIGNED_BYTE, 16, 16)) {
 		printf("gl_test: no OpenGL ES context\n");
 		return 1;
 	}
+	trace("context current");
 	printf("gl_test: %s; %s; %s\n", (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER),
 	    (const char *)glGetString(GL_VERSION));
 	if (argc > 1 && strcmp(argv[1], "fill") == 0) {
@@ -323,11 +344,11 @@ main(int argc, char **argv)
 	glVertexAttribPointer(1, 3, GL_FLOAT, 0, 5 * sizeof(float), corners + 2);
 	glEnableVertexAttribArray(0);
 	glEnableVertexAttribArray(1);
-	printf("gl_test: drawing\n");
+	trace("drawing");
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	glFinish();
 	drew = now_ms();
-	printf("gl_test: drawn\n");
+	trace("drawn");
 
 	drawn = malloc((size_t)width * (size_t)height * 4);
 	shown = malloc((size_t)width * (size_t)height * 4);
@@ -335,10 +356,10 @@ main(int argc, char **argv)
 		return 1;
 	}
 	memset(drawn, 0x55, (size_t)width * (size_t)height * 4);
-	printf("gl_test: reading back\n");
+	trace("reading back");
 	glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, drawn);
 	read = now_ms();
-	printf("gl_test: read back\n");
+	trace("read back");
 	/* the panel's rows go down and its pixels are blue first */
 	for (int y = 0; y < height; y++) {
 		const uint8_t *from = drawn + (size_t)(height - 1 - y) * (size_t)width * 4;
@@ -363,6 +384,7 @@ main(int argc, char **argv)
 
 	service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosGPU"));
 	printf("gl_test: GPU service %u\n", (unsigned)service);
+	trace("looked up the GPU service");
 	if (service == 0 || IOServiceOpen(service, mach_task_self(), 0, &connection) != 0) {
 		printf("gl_test: no GPU service in this kernel to put the picture on the panel with\n");
 		return 0;
