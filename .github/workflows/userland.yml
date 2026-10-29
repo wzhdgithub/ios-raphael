@@ -40,8 +40,14 @@ jobs:
           brew install -q meson ninja bison flex || true
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
-          echo "$(dirname "$(xcrun -f llvm-ar)")" >> "$GITHUB_PATH"
-          bison --version | head -1; flex --version; meson --version; ninja --version
+          TCBIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+          echo "$TCBIN" >> "$GITHUB_PATH"
+          ls "$TCBIN" | grep -E '^(llvm-ar|llvm-ranlib|llvm-strip|install_name_tool|nm)$' || true
+          if [ ! -x "$TCBIN/llvm-ranlib" ] && [ -x "$TCBIN/llvm-ar" ]; then
+            sudo ln -sf "$TCBIN/llvm-ar" "$TCBIN/llvm-ranlib" || true
+          fi
+          "$TCBIN/llvm-ar" --version | head -1 || true
+          bison --version | head -1; meson --version; ninja --version
 
       - name: "build Mesa (libOSMesa.8.dylib, softpipe + freedreno)"
         run: |

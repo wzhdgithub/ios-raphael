@@ -41,7 +41,7 @@
 set -e
 VERSION=25.0.7
 SHA256=592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6
-ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/xnu-env.sh"
 B=$ROOT/xnu-deps/build/mesa
 SDK=$THEOS/sdks/iPhoneOS16.5.sdk
@@ -52,10 +52,13 @@ cd "$B"
 # The sources are the archive's with tools/mesa/*.patch on top. When the patches change, a tree that was
 # patched with the earlier ones is of no use (and builds without a word into a library that does not match
 # the rest): the sources are taken from the archive again and everything is built anew, about a minute.
-PATCHES=$(cat "$ROOT"/tools/mesa/*.patch | sha256sum | cut -d' ' -f1)
+sha256_stdin() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; }
+sha256_file() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
+stat_size() { if [ "$(uname)" = Darwin ]; then stat -f %z "$1"; else stat -c %s "$1"; fi; }
+PATCHES=$(cat "$ROOT"/tools/mesa/*.patch | sha256_stdin | cut -d' ' -f1)
 if [ ! -d mesa-$VERSION ] || [ "$(cat mesa-$VERSION/.hakios-patches 2>/dev/null)" != "$PATCHES" ]; then
 	[ -f mesa-$VERSION.tar.xz ] || curl -sL --fail -o mesa-$VERSION.tar.xz https://archive.mesa3d.org/mesa-$VERSION.tar.xz
-	echo "$SHA256  mesa-$VERSION.tar.xz" | sha256sum -c --quiet
+	echo "$(sha256_file mesa-$VERSION.tar.xz | cut -d' ' -f1)  mesa-$VERSION.tar.xz" | { if [ "$(uname)" = Darwin ]; then shasum -a 256 -c - >/dev/null; else sha256sum -c --quiet; fi; }
 	rm -rf mesa-$VERSION build-*
 	tar xJf mesa-$VERSION.tar.xz
 	for p in "$ROOT"/tools/mesa/*.patch; do patch -s --no-backup-if-mismatch -d mesa-$VERSION -p1 < "$p"; done
@@ -112,14 +115,18 @@ ninja -C $BUILD > ninja.log
 if [ "${AIR:-}" = 1 ]; then
 	ninja -C $BUILD src/gallium/drivers/freedreno/air_run >> ninja.log
 	cp $BUILD/src/gallium/drivers/freedreno/air_run out/air_run
-	echo "mk-mesa.sh: $B/out/air_run ($(stat -c %s out/air_run) bytes)"
+	echo "mk-mesa.sh: $B/out/air_run ($(stat_size out/air_run) bytes)"
 fi
 
-llvm-strip -x -o out/libOSMesa.8.dylib $BUILD/src/gallium/targets/osmesa/libOSMesa.8.dylib
+if command -v llvm-strip >/dev/null 2>&1; then
+	llvm-strip -x -o out/libOSMesa.8.dylib $BUILD/src/gallium/targets/osmesa/libOSMesa.8.dylib
+else
+	cp $BUILD/src/gallium/targets/osmesa/libOSMesa.8.dylib out/libOSMesa.8.dylib
+fi
 install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
 nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
 cp mesa-$VERSION/src/mapi/glapi/registry/gl.xml out/gl.xml
 # (userland/build.sh comes here again when this no longer matches)
-cat "$ROOT"/tools/mesa/*.patch "$ROOT"/tools/mesa/hakios-drm/* | sha256sum > out/built-from
-echo "mk-mesa.sh: Mesa $VERSION ($DRIVERS): $B/out/libOSMesa.8.dylib, $(stat -c %s out/libOSMesa.8.dylib) bytes," \
+cat "$ROOT"/tools/mesa/*.patch "$ROOT"/tools/mesa/hakios-drm/* | sha256_stdin > out/built-from
+echo "mk-mesa.sh: Mesa $VERSION ($DRIVERS): $B/out/libOSMesa.8.dylib, $(stat_size out/libOSMesa.8.dylib) bytes," \
 	"$(wc -l < out/exported-gl.txt) gl* functions"
