@@ -286,6 +286,12 @@ main(int argc, char **argv)
 	io_connect_t connection = 0;
 	OSMesaContext context;
 	int good = 0;
+	int stage = 9;
+
+	/* GL_TEST_STAGE=N stops after stage N: one binary, a ladder of jobs. */
+	if (getenv("GL_TEST_STAGE") != NULL) {
+		stage = atoi(getenv("GL_TEST_STAGE"));
+	}
 
 	/* stdout is /dev/console here, not a terminal: unbuffered, and every stage
 	 * also fsync'd to /private/var/gl_test.trace so a machine that stops still
@@ -293,9 +299,15 @@ main(int argc, char **argv)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	trace("begin");
+	if (stage < 2) {
+		return 0;
+	}
 	trace("creating the OpenGL ES context");
 	context = OSMesaCreateContextAttribs(attributes, NULL);
 	trace(context == NULL ? "context none" : "context created");
+	if (stage < 3) {
+		return 0;
+	}
 	if (context == NULL || !OSMesaMakeCurrent(context, window, GL_UNSIGNED_BYTE, 16, 16)) {
 		printf("gl_test: no OpenGL ES context\n");
 		return 1;
@@ -303,6 +315,9 @@ main(int argc, char **argv)
 	trace("context current");
 	printf("gl_test: %s; %s; %s\n", (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER),
 	    (const char *)glGetString(GL_VERSION));
+	if (stage < 4) {
+		return 0;
+	}
 	if (argc > 1 && strcmp(argv[1], "fill") == 0) {
 		fill(argc > 3 ? atoi(argv[2]) : 1125, argc > 3 ? atoi(argv[3]) : 2436);
 		return 0;
@@ -320,6 +335,10 @@ main(int argc, char **argv)
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
 		printf("gl_test: the framebuffer is not complete\n");
 		return 1;
+	}
+	trace("framebuffer complete");
+	if (stage < 5) {
+		return 0;
 	}
 	program = glCreateProgram();
 	glAttachShader(program, shader(GL_VERTEX_SHADER,
@@ -349,6 +368,9 @@ main(int argc, char **argv)
 	glFinish();
 	drew = now_ms();
 	trace("drawn");
+	if (stage < 6) {
+		return 0;
+	}
 
 	drawn = malloc((size_t)width * (size_t)height * 4);
 	shown = malloc((size_t)width * (size_t)height * 4);
@@ -360,6 +382,9 @@ main(int argc, char **argv)
 	glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, drawn);
 	read = now_ms();
 	trace("read back");
+	if (stage < 7) {
+		return 0;
+	}
 	/* the panel's rows go down and its pixels are blue first */
 	for (int y = 0; y < height; y++) {
 		const uint8_t *from = drawn + (size_t)(height - 1 - y) * (size_t)width * 4;
@@ -385,6 +410,9 @@ main(int argc, char **argv)
 	service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosGPU"));
 	printf("gl_test: GPU service %u\n", (unsigned)service);
 	trace("looked up the GPU service");
+	if (stage < 8) {
+		return 0;
+	}
 	if (service == 0 || IOServiceOpen(service, mach_task_self(), 0, &connection) != 0) {
 		printf("gl_test: no GPU service in this kernel to put the picture on the panel with\n");
 		return 0;
