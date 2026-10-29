@@ -1056,3 +1056,24 @@ Stage Summary:
 **t61**：免编译 repack（adreno=15→17），镜像 raphael-t61-hfi-debug.img，10:42 boot；等 TWRP 拉日志看 step 16/17。
 **t62（0141）**：内嵌 a640_zap.mdt/.b02 + a630_sqe.fw，`MiniIOMobileFramebufferShow` 接到启动 framebuffer；cmdline adreno=22，目标 step 18–22 首次 GPU 出图（`A PICTURE DRAWN BY THE GPU IS ON THE PANEL`）。
 
+---
+
+## Task 74 — t74 injection verdict and t75 cached launchd job (2026-10-29)
+
+Agent: Qoder
+
+Task: Establish whether the injected Mesa test ran, then register its launchd job without rebuilding the kernel or replacing userdata.
+
+Work Log:
+- t74 persistent log is fresh: 256,763 bytes, flush #121. Mesa, gl_test and the standalone plist each report `written (0)`, but there is no `exec gl_test` or test output. Injection success is not evidence of job execution.
+- Read-only HFSX catalog traversal over recovery ADB extracted the current device files without mounting or changing volume headers. Both binaries exactly match the t73 artifact: gl_test 52,600 bytes, Mesa 16,116,288 bytes.
+- Two independent reads of `/System/Library/xpc/launchd.plist` agree: 795,217 bytes, SHA256 `7b41fa308304021a90fb8dfc4ac6224e6c1841fb73e47b7f09efbdd7167c91d1`. Its 530 cached jobs do not include gltest. The existing `tools/patch-launchd-plist.py` documents this cache for `launchd_unsecure_cache=1`; merely writing a standalone LaunchDaemon does not register a cached job.
+- t75 preserves every original cache entry and top-level key and adds only `com.hakios.gltest`. It runs `/private/var/gl_test 1 1080 2340` every 60 seconds, with `DYLD_LIBRARY_PATH=/usr/lib`. Output uses `/dev/null` plus `sweetnull=backboardd,SpringBoard,launchd,gl_test`; patch 0048 documents why `/dev/console` redirects are unsuitable here.
+- The original cache is saved locally and transported as the first SPAY entry to `/private/var/launchd.gltest-before.plist`; the updated cache is second. It grows to 795,455 bytes, avoiding the existing injector's lack of truncation. No raw partition writes are used.
+- Reused the t74 kernel, no new CI. Local builder verifies shim/DTB identity, exact ADT equality after removing the sole added RAMDisk property, SPAY bounds/content, kernel markers and the one-byte clean/debug difference.
+- At 14:40 +08:00, `fastboot boot` accepted the 19,255,407-byte debug image; SHA256 `926a096d636f42207f0121d51945c120e4b4803a8c66d71f538d36fcc70e3a21`. Fastboot was no longer enumerated at 14:41.
+
+Stage Summary:
+- t74 file delivery is verified; t75 job loading and GLES execution remain pending the next recovery log. Require FD640/freedreno identification, GL error 0 and correct triangle readback; software fallback is not GPU success.
+- Local artifacts and reproducible scripts: `D:\K20iOS\t75build\read_hfsx.py`, `build_t75.py`, `manifest.json`, original/updated cache and temporary images. Backups and device-extracted content remain outside git. Remove the periodic diagnostic job after its verdict.
+
