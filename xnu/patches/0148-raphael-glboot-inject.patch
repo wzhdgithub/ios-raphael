@@ -1,0 +1,176 @@
+diff --git a/bsd/dev/sweet_inject.c b/bsd/dev/sweet_inject.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_inject.c
+@@ -0,0 +1,146 @@
++/*
++ * glboot=1: the GL userland of this bring-up travels in the boot payload as a "SWEETPAY"
++ * image (payload image built with mkpayload.py --ramdisk; the ADT then carries
++ * /chosen/memory-map "RAMDisk" = <phys, size>). This copies it into the root file system
++ * between the root mount and launchd:
++ *
++ *   /usr/lib/libOSMesa.8.dylib                              Mesa 25.0.7, fd6, hakios-drm
++ *   /private/var/gl_test                                    the triangle (runs with
++ *                                                           DYLD_LIBRARY_PATH=/usr/lib)
++ *   /System/Library/LaunchDaemons/com.hakios.gltest.plist   starts it at boot
++ *
++ * The root file system is HFSX, which none of the tools on our build machines can write
++ * (TWRP has no HFS, the host tools cannot parse HFSX); the kernel's own HFS+ code can.
++ * A missing or malformed payload leaves the system exactly as it was.
++ *
++ * SWEETPAY image, little endian:
++ *   0x00  u32 magic 'SPAY', u32 version = 1, u32 count, u32 data_off
++ *   0x10  count * { u32 path_off, u32 data_off, u32 size, u32 mode }   (offsets from 0)
++ *   ...   the paths, NUL terminated
++ *   data_off  the files' data, each at data_off + entry.data_off
++ */
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/fcntl.h>
++#include <sys/kauth.h>
++#include <sys/vnode.h>
++#include <sys/vfs_context.h>
++#include <libkern/libkern.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <mach/vm_param.h>
++
++extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
++
++#define SPAY_MAGIC      0x53504159u     /* 'SPAY' */
++#define SPAY_VERSION    1u
++#define SPAY_MAX_ENTRIES 8u
++#define SPAY_HEAD_MAX   8192u
++#define SPAY_VM_FLAGS   0x6u            /* VM_WIMG_WCOMB (osfmk/arm/memory_types.h) */
++
++struct spay_header {
++	uint32_t magic, version, count, data_off;
++};
++
++struct spay_entry {
++	uint32_t path_off, data_off, size, mode;
++};
++
++/* The job that runs the test: the library comes from /usr/lib (DYLD_LIBRARY_PATH), since
++ * the one the test links against by name lives at /redwood/lib in the reference tree. */
++static const char gl_plist[] =
++    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
++    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
++    "<plist version=\"1.0\">\n"
++    "<dict>\n"
++    "\t<key>Label</key><string>com.hakios.gltest</string>\n"
++    "\t<key>ProgramArguments</key><array><string>/private/var/gl_test</string></array>\n"
++    "\t<key>EnvironmentVariables</key><dict><key>DYLD_LIBRARY_PATH</key><string>/usr/lib</string></dict>\n"
++    "\t<key>RunAtLoad</key><true/>\n"
++    "\t<key>StandardOutPath</key><string>/dev/console</string>\n"
++    "\t<key>StandardErrorPath</key><string>/dev/console</string>\n"
++    "</dict>\n"
++    "</plist>\n";
++
++static int
++spay_write(const char *path, const uint8_t *data, uint32_t size, uint32_t mode)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULL;
++	errno_t error;
++
++	error = vnode_open(path, O_CREAT | FWRITE, (int)mode, 0, &vp, ctx);
++	if (error != 0) {
++		return error;
++	}
++	if (size != 0) {
++		error = vn_rdwr(UIO_WRITE, vp, (caddr_t)(uintptr_t)data, (int)size, 0, UIO_SYSSPACE,
++		    IO_NODELOCKED | IO_UNIT, kauth_cred_get(), NULL, NULL);
++	}
++	(void)vnode_close(vp, FWRITE, ctx);
++	return error;
++}
++
++void
++sweet_inject_root(void)
++{
++	DTEntry map;
++	void const *prop = NULL;
++	unsigned int prop_size = 0;
++	struct spay_header *head;
++	struct spay_entry *entry;
++	uint8_t *blob;
++	uint64_t pa, bytes;
++	int on = 0;
++	uint32_t written = 0;
++	int error;
++
++	if (!PE_parse_boot_argn("glboot", &on, sizeof(on)) || on == 0) {
++		return;
++	}
++	if (SecureDTLookupEntry(NULL, "/chosen/memory-map", &map) != kSuccess ||
++	    SecureDTGetProperty(map, "RAMDisk", &prop, &prop_size) != kSuccess ||
++	    prop_size < 2 * sizeof(uint64_t)) {
++		printf("SWEET INJECT: glboot: the payload carries no RAMDisk; nothing done\n");
++		return;
++	}
++	pa = ((const uint64_t *)prop)[0];
++	bytes = ((const uint64_t *)prop)[1];
++	printf("SWEET INJECT: glboot: payload at %#llx, %llu bytes\n", pa, bytes);
++	blob = (uint8_t *)ml_io_map_unmappable((vm_offset_t)pa, (vm_size_t)round_page(bytes), SPAY_VM_FLAGS);
++	if (blob == NULL || bytes < sizeof(struct spay_header)) {
++		printf("SWEET INJECT: glboot: the payload does not map\n");
++		return;
++	}
++	head = (struct spay_header *)blob;
++	if (head->magic != SPAY_MAGIC || head->version != SPAY_VERSION || head->count == 0 ||
++	    head->count > SPAY_MAX_ENTRIES || head->data_off > SPAY_HEAD_MAX || head->data_off > bytes) {
++		printf("SWEET INJECT: glboot: no SWEETPAY image (%#x, version %u, %u entries)\n",
++		    head->magic, head->version, head->count);
++		return;
++	}
++	entry = (struct spay_entry *)(blob + sizeof(*head));
++	for (uint32_t i = 0; i < head->count; i++) {
++		const char *path = (const char *)(blob + entry[i].path_off);
++		uint64_t at = (uint64_t)head->data_off + entry[i].data_off;
++
++		if (entry[i].path_off >= SPAY_HEAD_MAX || path[0] != '/' ||
++		    at + entry[i].size > bytes || at + entry[i].size < at) {
++			printf("SWEET INJECT: entry %u is not in the image; left out\n", i);
++			continue;
++		}
++		error = spay_write(path, blob + at, entry[i].size, entry[i].mode);
++		printf("SWEET INJECT: %s: %u bytes, %s (%d)\n", path, entry[i].size,
++		    error == 0 ? "written" : "FAILED", error);
++		if (error == 0) {
++			written++;
++		}
++	}
++	error = spay_write("/System/Library/LaunchDaemons/com.hakios.gltest.plist",
++	    (const uint8_t *)gl_plist, sizeof(gl_plist) - 1, 0644);
++	printf("SWEET INJECT: com.hakios.gltest.plist: %s (%d)\n", error == 0 ? "written" : "FAILED", error);
++	if (error == 0) {
++		written++;
++	}
++	printf("SWEET INJECT: %u files in the root; gl_test runs at boot, its output on the console\n", written);
++}
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -113,6 +113,7 @@ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_usb.c			standard
+ bsd/dev/sweet_gpu.c			standard
+ bsd/dev/hakios.adreno.c			standard
++bsd/dev/sweet_inject.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -902,6 +902,12 @@
+ 	lck_rw_lock_exclusive(&rootvnode_rw_lock);
+ 	set_rootvnode(init_rootvnode);
+ 	lck_rw_unlock_exclusive(&rootvnode_rw_lock);
++#if defined(ARM64_BOARD_CONFIG_RAPHAEL)
++	{
++		extern void sweet_inject_root(void);
++		sweet_inject_root();    /* glboot=1: the GL userland into the root, before launchd */
++	}
++#endif
+ 	init_rootvnode = NULLVP;  /* use rootvnode after this point */
+ 
+ 
