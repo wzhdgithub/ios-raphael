@@ -55,6 +55,20 @@ trace(const char *what)
 	}
 }
 
+#include <stdarg.h>
+
+static void
+tracef(const char *fmt, ...)
+{
+	char what[512];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(what, sizeof(what), fmt, ap);
+	va_end(ap);
+	trace(what);
+}
+
 /* GL/osmesa.h and GLES2/gl2.h of Mesa, as far as they are used here */
 typedef struct osmesa_context *OSMesaContext;
 extern OSMesaContext OSMesaCreateContextAttribs(const int *attributes, OSMesaContext share);
@@ -343,8 +357,8 @@ main(int argc, char **argv)
 		return 1;
 	}
 	trace("context current");
-	printf("gl_test: %s; %s; %s\n", (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER),
-	    (const char *)glGetString(GL_VERSION));
+	tracef("renderer %s | %s | %s", (const char *)glGetString(GL_VENDOR),
+	    (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION));
 	if (stage < 4) {
 		return 0;
 	}
@@ -430,15 +444,15 @@ main(int argc, char **argv)
 	}
 #define PIXEL(x, y) drawn[((size_t)(y) * (size_t)width + (size_t)(x)) * 4], drawn[((size_t)(y) * (size_t)width + (size_t)(x)) * 4 + 1], \
 	    drawn[((size_t)(y) * (size_t)width + (size_t)(x)) * 4 + 2], drawn[((size_t)(y) * (size_t)width + (size_t)(x)) * 4 + 3]
-	printf("gl_test: %d x %d drawn in %llu ms, read back in %llu ms; error %#x; red green blue alpha: a corner %u %u %u %u, "
-	    "the middle %u %u %u %u, near the red corner %u %u %u %u, near the green %u %u %u %u, near the blue %u %u %u %u; "
-	    "%u of %u pixels inside the triangle (%u%%; 26%% by geometry)\n", width, height, drew - began, read - drew,
+	tracef("%d x %d drawn in %llu ms, read back in %llu ms; error %#x; rgba a corner %u %u %u %u, "
+	    "the middle %u %u %u %u, near red %u %u %u %u, near green %u %u %u %u, near blue %u %u %u %u; "
+	    "%u of %u pixels inside the triangle (%u%%; 26%% by geometry)", width, height, drew - began, read - drew,
 	    glGetError(), PIXEL(2, 2), PIXEL(width / 2, height / 2), PIXEL(width * 15 / 100, height * 22 / 100),
 	    PIXEL(width * 85 / 100, height * 22 / 100), PIXEL(width / 2, height * 80 / 100), coloured,
 	    (unsigned)(width * height), (unsigned)((uint64_t)coloured * 100 / (uint64_t)(width * height)));
 
 	service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosGPU"));
-	printf("gl_test: GPU service %u\n", (unsigned)service);
+	tracef("GPU service %u", (unsigned)service);
 	trace("looked up the GPU service");
 	if (stage < 8) {
 		return 0;
@@ -452,7 +466,7 @@ main(int argc, char **argv)
 		kern_return_t result = IOConnectCallStructMethod(connection, 0x7f, &show, sizeof(show), NULL, NULL);
 
 		if (i == 0) {
-			printf("gl_test: the picture is on the panel (%#x), for %d seconds\n", result, seconds);
+			tracef("the picture is on the panel (%#x), for %d seconds", result, seconds);
 		}
 		usleep(200000);
 	}
