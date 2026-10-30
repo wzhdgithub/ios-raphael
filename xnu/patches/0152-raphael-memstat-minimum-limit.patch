@@ -1,0 +1,24 @@
+--- a/bsd/kern/kern_memorystatus.c
++++ b/bsd/kern/kern_memorystatus.c
+@@ -7863,7 +7863,21 @@
+ 	}
+ #endif /* DEVELOPMENT || DEBUG */
+ #endif /* CONFIG_JETSAM */
+ 
++	/*
++	 * SWEET: on this port every job arrives here with a 6 MB limit --
++	 * driverkitd (a stock job with no JetsamProperties) and our own gl_test
++	 * both die with JETSAM_REASON_MEMORY_PERPROCESSLIMIT because of it, and
++	 * a 16 MB framework alone does not fit. Nothing on the phone runs in
++	 * single-digit megabytes, so treat a limit below 64 MB as the bogus
++	 * value it is and give the process room to work.
++	 */
++	if (set_entry.memlimit_active > 0 && set_entry.memlimit_active < 64) {
++		set_entry.memlimit_active = 2048;
++	}
++	if (set_entry.memlimit_inactive > 0 && set_entry.memlimit_inactive < 64) {
++		set_entry.memlimit_inactive = 2048;
++	}
+ 	proc_list_lock();
+ 
+ 	int error = memorystatus_set_memlimit_properties_internal(p, &set_entry);
