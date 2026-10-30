@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/hakios.gpu.cpp b/iokit/Kernel/arm/hakios.gpu.cpp
+index 290df4b..a5b0f96 100644
+--- a/iokit/Kernel/arm/hakios.gpu.cpp
++++ b/iokit/Kernel/arm/hakios.gpu.cpp
+@@ -820,7 +820,14 @@ HakiosGPUUserClient::surfaceBuffer(struct hakios_surface * request)
+ 	if (b != NULL) {
+ 		memory->release();
+ 		MiniIOSurfaceDrop(s);
+-	} else if ((b = newBuffer(s->memory, PAGE_SIZE, size, 0, &request->handle)) != NULL) {
++	/*
++	 * From byte 0: MiniIOSurface keeps a shared state page in front of the pixels and
++	 * its version of this started at PAGE_SIZE, but SweetSurface's pixels are the whole
++	 * descriptor (sweet_surface_fill_result gives the state page separately), so from
++	 * PAGE_SIZE the last page lay past its end and the buffer was refused -- which is
++	 * why every surface took the copying path (0 IOSurfaces were the textures' memory).
++	 */
++	} else if ((b = newBuffer(s->memory, 0, size, 0, &request->handle)) != NULL) {
+ 		b->memory = memory;
+ 		b->kernel = (uint8_t *)s->kernelAddress();
+ 		b->surface = s;
