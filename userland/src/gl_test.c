@@ -37,10 +37,14 @@ trace(const char *what)
 		 * for when writing to /dev/console is what stops the machine. */
 		quiet = getenv("GL_TEST_QUIET") != NULL;
 	}
-	if (!quiet) {
+	if (!quiet || getenv("GL_TEST_NOFILE") != NULL) {
 		printf("gl_test: %s\n", what);
 	}
 	len = snprintf(line, sizeof(line), "pid %d: %s\n", (int)getpid(), what);
+	/* GL_TEST_NOFILE=1: console only, no HFS write at all. */
+	if (getenv("GL_TEST_NOFILE") != NULL) {
+		return;
+	}
 	snprintf(path, sizeof(path), "/private/var/gl_test.trace.%d", trace_stage);
 	fd = open(path, O_WRONLY | O_CREAT |
 	    (strcmp(what, "begin") == 0 ? O_TRUNC : O_APPEND), 0644);
