@@ -331,6 +331,11 @@ main(int argc, char **argv)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	trace("begin");
+	{
+		const char *inj = getenv("DYLD_INSERT_LIBRARIES");
+
+		tracef("env DYLD_INSERT_LIBRARIES=%s", inj ? inj : "(none)");
+	}
 	if (stage == 0) {
 		/* liveness probe: the console may stop without the machine stopping,
 		 * so tick into the trace file once a second for two minutes. */
