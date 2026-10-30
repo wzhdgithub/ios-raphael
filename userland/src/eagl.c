@@ -525,30 +525,6 @@ image_of(struct eagl *e, GLuint texture)
 	return NULL;
 }
 
-static struct image *
-image_new(struct eagl *e, GLuint texture, IOSurfaceRef surface)
-{
-	struct image *image = image_of(e, texture);
-
-	if (image == NULL) {
-		if (e->image_count == sizeof(e->images) / sizeof(e->images[0])) {
-			say("hakios-gl: more textures with IOSurfaces than there is room for\n");
-			return NULL;
-		}
-		image = &e->images[e->image_count++];
-	} else {
-		if (image->mirror != 0) {
-			glDeleteTextures(1, &image->mirror);
-		}
-		surface_held_longer(image->surface);
-	}
-	memset(image, 0, sizeof(*image));
-	image->texture = texture;
-	image->surface = (IOSurfaceRef)CFRetain(surface);
-	surface_held_longer((IOSurfaceRef)CFRetain(surface));
-	return image;
-}
-
 /*
  * The display copies a frame into the panel one vsync after the swap, and CoreAnimation
  * makes a texture and a surface per frame and lets them go as soon as the swap returns --
@@ -573,6 +549,30 @@ surface_held_longer(IOSurfaceRef surface)
 	if (slot < RECENT_SURFACES) {
 		recent_surfaces[slot] = surface;
 	}
+}
+
+static struct image *
+image_new(struct eagl *e, GLuint texture, IOSurfaceRef surface)
+{
+	struct image *image = image_of(e, texture);
+
+	if (image == NULL) {
+		if (e->image_count == sizeof(e->images) / sizeof(e->images[0])) {
+			say("hakios-gl: more textures with IOSurfaces than there is room for\n");
+			return NULL;
+		}
+		image = &e->images[e->image_count++];
+	} else {
+		if (image->mirror != 0) {
+			glDeleteTextures(1, &image->mirror);
+		}
+		surface_held_longer(image->surface);
+	}
+	memset(image, 0, sizeof(*image));
+	image->texture = texture;
+	image->surface = (IOSurfaceRef)CFRetain(surface);
+	surface_held_longer((IOSurfaceRef)CFRetain(surface));
+	return image;
 }
 
 static void
