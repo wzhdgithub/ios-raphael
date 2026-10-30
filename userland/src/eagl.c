@@ -70,7 +70,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
+#include <signal.h>
 #include <sys/sysctl.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include "hakios.gl.h"
@@ -4051,9 +4054,76 @@ display_waits(void)
 	return waits;
 }
 
+/*
+ * The window server's own code lives in the shared cache, so a crash report from the kernel is a
+ * list of addresses that say nothing on its own. Each frame is asked of dyld here (dladdr knows
+ * the cache): the image it belongs to, and the function where the image exports the name. Only
+ * write(2) is used; then the process is let die the way it would have.
+ */
+static void
+crash_handler(int signal, siginfo_t *info, void *context)
+{
+#if defined(__arm64__)
+	ucontext_t *uc = (ucontext_t *)context;
+	char line[256];
+	uint64_t pc = 0, far = 0, fp = 0;
+	int n;
+
+	(void)info;
+	if (uc != NULL) {
+		pc = uc->uc_mcontext->__ss.__pc;
+		far = uc->uc_mcontext->__es.__far;
+		fp = uc->uc_mcontext->__ss.__fp;
+	}
+	n = snprintf(line, sizeof(line), "hakios-gl: CRASH sig %d pc %#llx far %#llx\n", signal,
+	    (unsigned long long)pc, (unsigned long long)far);
+	write(2, line, (size_t)n);
+	for (int depth = 0; depth < 16 && fp >= 0x1000 && (fp & 15) == 0; depth++) {
+		uint64_t next = ((const uint64_t *)(uintptr_t)fp)[0];
+		uint64_t lr = ((const uint64_t *)(uintptr_t)fp)[1];
+		Dl_info info_of = { 0 };
+		const char *image = "?";
+		const char *symbol = "?";
+
+		if (lr != 0 && dladdr((void *)(uintptr_t)lr, &info_of) != 0 && info_of.dli_fname != NULL) {
+			const char *slash = strrchr(info_of.dli_fname, '/');
+
+			image = slash != NULL ? slash + 1 : info_of.dli_fname;
+			symbol = info_of.dli_sname != NULL ? info_of.dli_sname : "?";
+		}
+		n = snprintf(line, sizeof(line), "hakios-gl:   frame %d: %#llx in %s (%s+%#llx)\n", depth,
+		    (unsigned long long)lr, image, symbol,
+		    (unsigned long long)(info_of.dli_saddr != NULL ? (uintptr_t)lr - (uintptr_t)info_of.dli_saddr : 0));
+		write(2, line, (size_t)n);
+		fp = next;
+	}
+	signal(signal, SIG_DFL);
+	raise(signal);
+#else
+	(void)info;
+	(void)context;
+	signal(signal, SIG_DFL);
+	raise(signal);
+#endif
+}
+
+static void
+install_crash_handler(void)
+{
+	struct sigaction action;
+
+	memset(&action, 0, sizeof(action));
+	action.sa_sigaction = crash_handler;
+	action.sa_flags = SA_SIGINFO;
+	sigemptyset(&action.sa_mask);
+	sigaction(SIGSEGV, &action, NULL);
+	sigaction(SIGBUS, &action, NULL);
+}
+
 __attribute__((constructor)) static void
 install(void)
 {
+	install_crash_handler();
 	static const struct {
 		const char *name;
 		IMP ours;

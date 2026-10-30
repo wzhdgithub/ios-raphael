@@ -1077,3 +1077,23 @@ Stage Summary:
 - t74 file delivery is verified; t75 job loading and GLES execution remain pending the next recovery log. Require FD640/freedreno identification, GL error 0 and correct triangle readback; software fallback is not GPU success.
 - Local artifacts and reproducible scripts: `D:\K20iOS\t75build\read_hfsx.py`, `build_t75.py`, `manifest.json`, original/updated cache and temporary images. Backups and device-extracted content remain outside git. Remove the periodic diagnostic job after its verdict.
 
+---
+
+## Task 75 — t75 cache verified; t76 immediate job diagnostics (2026-10-29)
+
+Agent: Qoder
+
+Task: Distinguish successful cache delivery from actual gl_test execution.
+
+Work Log:
+- t75 yielded a fresh 202,603-byte console log, flush #52. The cache and backup writes returned zero, GPU step 22 completed and the keep path returned, but there was no `exec gl_test` or test output.
+- A read-only extraction of the live cache is byte-identical to the intended t75 file (795,455 bytes; SHA256 `7ca08e62f7996aa1a2b5245b25182916fc2c3475e7d31b7893379ed98bb5267a`). The job is present on disk; its execution is not yet established.
+- t76 adds only `RunAtLoad=true` and `Debug=true` to that job. The existing 530 system jobs, 60-second timer, library environment and null-tee logging are unchanged. This removes waiting for the initial timer as a diagnostic variable.
+- SPAY first saves the t75 cache as `/private/var/launchd.gltest-t75.plist`, then writes the new 795,463-byte cache. The original pre-test backup remains intact. The replacement grows, so no truncation is required.
+- Reused the t74 kernel and t75 strict payload/template verification. Debug image: 19,255,407 bytes, SHA256 `ab3bdddbb9a73be9ad5099e961d99b8cafd4ce84a69e256c4c6f22d659bd7b42`. The actual `fastboot boot` command returned Sending/Booting OKAY.
+
+Stage Summary:
+- t76 is temporarily booted; runtime job/GLES verification awaits the recovery log. No new CI, partition flashing, or filesystem-header modifications were performed. Flush sequence numbers alone do not establish exact uptime or prove early user reboot.
+
+Correction (same day, after reading the launchd section of the t75 log): the cache IS consumed. The loader prints `Using unsecure cache: /System/Library/xpc/launchd.plist`, `Sending validated cache to launchd`, `Cache sent to launchd successfully`, so the job list came from the modified file. The earlier "launchd may not load the cache" reading is withdrawn. The t75 log covers only ~52 one-second flushes and its job had `StartInterval=60` without `RunAtLoad`, so the timer had not yet fired; absence of `exec gl_test` there does not show the job was rejected. t76's `RunAtLoad=true` is the direct test.
+
