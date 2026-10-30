@@ -1,0 +1,59 @@
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -257,14 +257,55 @@
+  * revalidation passes the read-only blob itself) get their entitlements here.
+  */
++/* SWEET: platformoff=name,name keeps those programs off the platform list, so
++ * dyld honours DYLD_INSERT_LIBRARIES for them (the kernel's exec_inject puts
++ * the library there). Everything else keeps the old behaviour, and the
++ * signature and its entitlements are untouched either way. */
++static bool
++sweet_platform_off(struct vnode *vp)
++{
++	static char list[256];
++	static bool ready;
++	const char *p;
++	size_t namelen;
++
++	if (!ready) {
++		extern int PE_parse_boot_argn(const char *, void *, int);
++
++		ready = true;
++		(void)PE_parse_boot_argn("platformoff", list, sizeof(list));
++	}
++	if (list[0] == 0 || vp->v_name == NULL) {
++		return false;
++	}
++	namelen = strlen(vp->v_name);
++	for (p = list; *p != 0; ) {
++		const char *word;
++		size_t len;
++
++		while (*p == ',' || *p == ' ') {
++			p++;
++		}
++		word = p;
++		while (*p != 0 && *p != ',' && *p != ' ') {
++			p++;
++		}
++		len = (size_t)(p - word);
++		if (len != 0 && len == namelen && strncmp(word, vp->v_name, len) == 0) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ static int
+ sweet_amfi_vnode_check_signature(struct vnode *vp, __unused struct label *label,
+     __unused cpu_type_t cpu_type, struct cs_blob *cs_blob,
+     unsigned int *cs_flags, __unused unsigned int *signer_type,
+     __unused int flags, __unused unsigned int platform,
+     __unused char **fatal_failure_desc, __unused size_t *fatal_failure_desc_len)
+ {
+ 	mount_t mp = vnode_mount(vp);
+ 	*cs_flags |= CS_SIGNED;
+-	if (mp != NULL && (vfs_flags(mp) & MNT_ROOTFS)) {
++	if (!sweet_platform_off(vp) && mp != NULL && (vfs_flags(mp) & MNT_ROOTFS)) {
+ 		*cs_flags |= CS_PLATFORM_BINARY;
+ 	}
