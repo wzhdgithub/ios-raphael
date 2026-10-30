@@ -540,12 +540,39 @@ image_new(struct eagl *e, GLuint texture, IOSurfaceRef surface)
 		if (image->mirror != 0) {
 			glDeleteTextures(1, &image->mirror);
 		}
-		CFRelease(image->surface);
+		surface_held_longer(image->surface);
 	}
 	memset(image, 0, sizeof(*image));
 	image->texture = texture;
 	image->surface = (IOSurfaceRef)CFRetain(surface);
+	surface_held_longer((IOSurfaceRef)CFRetain(surface));
 	return image;
+}
+
+/*
+ * The display copies a frame into the panel one vsync after the swap, and CoreAnimation
+ * makes a texture and a surface per frame and lets them go as soon as the swap returns --
+ * so the copy then found nothing ("SWEET FB: swap 2 layer 0 surface 2 0x0") and the panel
+ * stayed as it was. The surfaces that are let go here are therefore held a little longer,
+ * until a few more have been (12 of them at most, about two seconds' worth), which covers
+ * the window. The kernel's display takes its own reference as well (patch 0158); either
+ * is enough, and this one needs no kernel.
+ */
+#define RECENT_SURFACES 12
+static IOSurfaceRef recent_surfaces[RECENT_SURFACES];
+
+static void
+surface_held_longer(IOSurfaceRef surface)
+{
+	static unsigned at;
+	unsigned slot = at++ % RECENT_SURFACES;
+
+	if (slot < RECENT_SURFACES && recent_surfaces[slot] != NULL) {
+		CFRelease(recent_surfaces[slot]);
+	}
+	if (slot < RECENT_SURFACES) {
+		recent_surfaces[slot] = surface;
+	}
 }
 
 static void
@@ -557,7 +584,7 @@ image_forget(struct eagl *e, GLuint texture)
 		if (image->mirror != 0) {
 			glDeleteTextures(1, &image->mirror);
 		}
-		CFRelease(image->surface);
+		surface_held_longer(image->surface);
 		*image = e->images[--e->image_count];
 	}
 }
