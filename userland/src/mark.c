@@ -7,6 +7,7 @@
  * which launchd's jobs here have on the console, so the line lands in sweetlog.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 __attribute__((constructor))
