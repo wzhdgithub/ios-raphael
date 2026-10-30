@@ -73,7 +73,6 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <sys/sysctl.h>
-#include <ucontext.h>
 #include <unistd.h>
 
 #include "hakios.gl.h"
@@ -4056,54 +4055,84 @@ display_waits(void)
 
 /*
  * The window server's own code lives in the shared cache, so a crash report from the kernel is a
- * list of addresses that say nothing on its own. Each frame is asked of dyld here (dladdr knows
- * the cache): the image it belongs to, and the function where the image exports the name. Only
- * write(2) is used; then the process is let die the way it would have.
+ * list of addresses that names nothing. Each frame is asked of dyld here (dladdr knows the
+ * cache): the image it belongs to, and the function where the image exports the name.
+ *
+ * <ucontext.h> will not declare the signal context unless _XOPEN_SOURCE covers the whole file,
+ * and that hides the BSD calls this file needs, so the two structures wanted are laid out here:
+ * Darwin's ucontext_t ends with a pointer to the mcontext, and __darwin_mcontext64 begins with
+ * far, then x0-x28, frame pointer, link register, stack pointer, program counter.
  */
+struct hakios_ucontext {
+	int32_t onstack;
+	uint32_t sigmask;
+	uint64_t stack_sp;
+	uint64_t stack_size;
+	int32_t stack_flags;
+	int32_t stack_pad;
+	uint64_t link;
+	uint64_t mcsize;
+	uint64_t mcontext;
+};
+
+struct hakios_mcontext64 {
+	uint64_t far;
+	uint32_t esr;
+	uint32_t exception;
+	uint64_t x[29];
+	uint64_t fp;
+	uint64_t lr;
+	uint64_t sp;
+	uint64_t pc;
+	uint32_t cpsr;
+	uint32_t pad;
+};
+
 static void
-crash_handler(int signal, siginfo_t *info, void *context)
+crash_handler(int number, siginfo_t *info, void *context)
 {
 #if defined(__arm64__)
-	ucontext_t *uc = (ucontext_t *)context;
+	struct hakios_ucontext *uc = (struct hakios_ucontext *)context;
+	struct hakios_mcontext64 *mc = uc != NULL ? (struct hakios_mcontext64 *)(uintptr_t)uc->mcontext : NULL;
 	char line[256];
 	uint64_t pc = 0, far = 0, fp = 0;
 	int n;
 
 	(void)info;
-	if (uc != NULL) {
-		pc = uc->uc_mcontext->__ss.__pc;
-		far = uc->uc_mcontext->__es.__far;
-		fp = uc->uc_mcontext->__ss.__fp;
+	if (mc != NULL) {
+		pc = mc->pc;
+		far = mc->far;
+		fp = mc->fp;
 	}
-	n = snprintf(line, sizeof(line), "hakios-gl: CRASH sig %d pc %#llx far %#llx\n", signal,
+	n = snprintf(line, sizeof(line), "hakios-gl: CRASH sig %d pc %#llx far %#llx\n", number,
 	    (unsigned long long)pc, (unsigned long long)far);
 	write(2, line, (size_t)n);
 	for (int depth = 0; depth < 16 && fp >= 0x1000 && (fp & 15) == 0; depth++) {
 		uint64_t next = ((const uint64_t *)(uintptr_t)fp)[0];
 		uint64_t lr = ((const uint64_t *)(uintptr_t)fp)[1];
-		Dl_info info_of = { 0 };
+		Dl_info where = { 0 };
 		const char *image = "?";
 		const char *symbol = "?";
 
-		if (lr != 0 && dladdr((void *)(uintptr_t)lr, &info_of) != 0 && info_of.dli_fname != NULL) {
-			const char *slash = strrchr(info_of.dli_fname, '/');
+		if (lr != 0 && dladdr((void *)(uintptr_t)lr, &where) != 0 && where.dli_fname != NULL) {
+			const char *slash = strrchr(where.dli_fname, '/');
 
-			image = slash != NULL ? slash + 1 : info_of.dli_fname;
-			symbol = info_of.dli_sname != NULL ? info_of.dli_sname : "?";
+			image = slash != NULL ? slash + 1 : where.dli_fname;
+			symbol = where.dli_sname != NULL ? where.dli_sname : "?";
 		}
 		n = snprintf(line, sizeof(line), "hakios-gl:   frame %d: %#llx in %s (%s+%#llx)\n", depth,
 		    (unsigned long long)lr, image, symbol,
-		    (unsigned long long)(info_of.dli_saddr != NULL ? (uintptr_t)lr - (uintptr_t)info_of.dli_saddr : 0));
+		    (unsigned long long)(where.dli_saddr != NULL ? (uintptr_t)lr - (uintptr_t)where.dli_saddr : 0));
 		write(2, line, (size_t)n);
 		fp = next;
 	}
-	signal(signal, SIG_DFL);
-	raise(signal);
+	signal(number, SIG_DFL);
+	raise(number);
 #else
 	(void)info;
 	(void)context;
-	signal(signal, SIG_DFL);
-	raise(signal);
+	signal(number, SIG_DFL);
+	raise(number);
 #endif
 }
 
