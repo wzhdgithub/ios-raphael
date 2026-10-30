@@ -1,0 +1,26 @@
+diff --git a/osfmk/arm/commpage/commpage.c b/osfmk/arm/commpage/commpage.c
+index ee9f8de..9a47ad8 100644
+--- a/osfmk/arm/commpage/commpage.c
++++ b/osfmk/arm/commpage/commpage.c
+@@ -168,6 +168,21 @@ commpage_populate(void)
+ 	*((uint32_t*)(_COMM_PAGE_DEV_FIRM_LEGACY + _COMM_PAGE_RW_OFFSET)) = (uint32_t)PE_i_can_has_debugger(NULL);
+ 	*((uint32_t*)(_COMM_PAGE_DEV_FIRM + _COMM_PAGE_RO_OFFSET)) = (uint32_t)PE_i_can_has_debugger(NULL);
+ 	*((uint8_t*)(_COMM_PAGE_USER_TIMEBASE + _COMM_PAGE_RW_OFFSET)) = user_timebase_type();
++	/*
++	 * SWEET: dyld reads test mode out of this comm page word, and only pid 1
++	 * may write kern.dyld_flags, so take the boot-arg here once. dyld needs
++	 * test mode (and internal install, which debug=0xc gives) before it will
++	 * look at DYLD_AMFI_FAKE, the debug override of its amfiFlags.
++	 */
++	{
++		extern int PE_parse_boot_argn(const char *, void *, int);
++		uint64_t sweet_dyld_flags = 0;
++
++		if (PE_parse_boot_argn("dyld_flags", &sweet_dyld_flags,
++		    sizeof(sweet_dyld_flags))) {
++			commpage_update_dyld_flags(sweet_dyld_flags);
++		}
++	}
+ 	*((uint8_t*)(_COMM_PAGE_CONT_HWCLOCK + _COMM_PAGE_RW_OFFSET)) = (uint8_t)user_cont_hwclock_allowed();
+ 	*((uint8_t*)(_COMM_PAGE_KERNEL_PAGE_SHIFT_LEGACY + _COMM_PAGE_RW_OFFSET)) = (uint8_t) page_shift;
+ 	*((uint8_t*)(_COMM_PAGE_KERNEL_PAGE_SHIFT + _COMM_PAGE_RO_OFFSET)) = (uint8_t) page_shift;

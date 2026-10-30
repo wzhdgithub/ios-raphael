@@ -1,6 +1,6 @@
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -5545,10 +5545,78 @@
+@@ -5545,10 +5545,87 @@
   * Note:	The argument and environment vectors are user space pointers
   *		to arrays of user space pointers.
   */
@@ -16,7 +16,8 @@
 +    sizeof(exec_inject_conf), "LIBRARY,NAME... [; LIBRARY,NAME...]: programs started with the library inserted");
 +
 +static bool
-+exec_inject_env(struct image_params *imgp, char *env, size_t size)
++exec_inject_env(struct image_params *imgp, char *env, size_t size,
++    char *fake, size_t fake_size)
 +{
 +	static bool ready;
 +	const char *name, *p = exec_inject_conf;
@@ -68,6 +69,13 @@
 +			any = true;
 +		}
 +	}
++	if (any && fake != NULL) {
++		/* dyld only looks at DYLD_* when its amfiFlags allow it, and
++		 * nobody answers amfi_check_dyld_policy_self() here; the debug
++		 * override turns every allow bit on (testMode comes from
++		 * dyld_flags=2 via the comm page). */
++		strlcpy(fake, "DYLD_AMFI_FAKE=0x3f", fake_size);
++	}
 +	return any;
 +}
 +
@@ -76,16 +84,19 @@
  exec_extract_strings(struct image_params *imgp)
  {
 +	char            inject_env[512];
++	char            inject_fake[64];
  	int error = 0;
  	int     ptr_size = (imgp->ip_flags & IMGPF_WAS_64BIT_ADDR) ? 8 : 4;
  	int new_ptr_size = (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) ? 8 : 4;
-@@ -5741,7 +5624,20 @@
+@@ -5741,7 +5624,34 @@
  		imgp->ip_argspace -= new_ptr_size; /* to hold envv[] entry */
  		imgp->ip_envc++;
  	}
  
 +	/* SWEET: one more variable for the programs that get our library inside them */
-+	if (exec_inject_env(imgp, inject_env, sizeof(inject_env))) {
++	inject_fake[0] = 0;
++	if (exec_inject_env(imgp, inject_env, sizeof(inject_env),
++	    inject_fake, sizeof(inject_fake))) {
 +		error = exec_add_user_string(imgp, CAST_USER_ADDR_T(inject_env), UIO_SYSSPACE, TRUE);
 +		if (error) {
 +			goto bad;
@@ -96,6 +107,18 @@
 +		}
 +		imgp->ip_argspace -= new_ptr_size; /* to hold envv[] entry */
 +		imgp->ip_envc++;
++		if (inject_fake[0] != 0) {
++			error = exec_add_user_string(imgp, CAST_USER_ADDR_T(inject_fake), UIO_SYSSPACE, TRUE);
++			if (error) {
++				goto bad;
++			}
++			if (imgp->ip_argspace < new_ptr_size) {
++				error = E2BIG;
++				goto bad;
++			}
++			imgp->ip_argspace -= new_ptr_size; /* to hold envv[] entry */
++			imgp->ip_envc++;
++		}
 +	}
  	/* Save space for envv[] NULL terminator */
  	if (imgp->ip_argspace < new_ptr_size) {
