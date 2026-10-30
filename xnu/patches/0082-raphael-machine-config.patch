@@ -96,7 +96,7 @@ index 0000000..0d93890
 +#  SCHED_RELEASE =  [ SCHED_BASE ]
 +#  SCHED_DEV =      [ SCHED_BASE ]
 +#  SCHED_DEBUG =    [ SCHED_BASE config_sched_grrr config_sched_proto ]
-+#  VM_BASE =        [ vm_pressure_events config_code_decryption encrypted_swap config_deferred_reclaim ]
++#  VM_BASE =        [ vm_pressure_events memorystatus config_code_decryption encrypted_swap config_deferred_reclaim ]
 +#  VM_RELEASE =     [ VM_BASE ]
 +#  VM_DEV =         [ VM_BASE dynamic_codesigning pgzalloc ]
 +#  VM_DEBUG =       [ VM_BASE dynamic_codesigning pgzalloc ]
