@@ -1,6 +1,6 @@
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -397,10 +397,21 @@
+@@ -397,10 +397,22 @@
  	len = PAGE_SIZE - (pa & PAGE_MASK);
  	if (*max_len > len) {
  		*max_len = len;
@@ -20,7 +20,8 @@
 +			    (unsigned long long)pa, __builtin_return_address(0));
 +		}
 +		*max_len = 0;
-+		return (vm_map_address_t)gVirtBase;
++		/* a mapped kernel address: gVirtBase itself is not mapped */
++		return (vm_map_address_t)&gVirtBase;
  	}
  	return pa - gPhysBase + gVirtBase;
  }
