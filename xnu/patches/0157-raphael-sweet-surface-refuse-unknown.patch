@@ -1,0 +1,75 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index be773b2..9fc88f5 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -43,9 +43,19 @@
+ enum {
+ 	kSweetSurfaceCreate             = 0,
+ 	kSweetSurfaceLookup             = 4,
++	kSweetSurfaceSetYCbCrMatrix     = 5,
++	kSweetSurfaceWrapClientImage    = 6,
++	kSweetSurfaceWrapClientMemory   = 7,
++	kSweetSurfaceSetValue           = 9,
+ 	kSweetSurfaceLimits             = 13,
++	kSweetSurfaceSetOwnership       = 21,
++	kSweetSurfaceSetTimestamp       = 24,
++	kSweetSurfaceSetBulkAttachments = 27,
+ 	kSweetSurfaceLookupFromPort     = 34,
+ 	kSweetSurfaceCreatePort         = 35,
++	kSweetSurfaceValue40            = 40,
++	kSweetSurfaceValue41            = 41,
++	kSweetSurfaceSetOwnershipIdentity = 44,
+ };
+ 
+ enum {
+@@ -772,16 +782,47 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		sweet_surf_log_once("sel", selector);
+ 		return kIOReturnSuccess;
+ 	}
+-	default:
+-		/* Values, notifications, ownership, timestamps...: accept and ignore. */
++	/*
++	 * The ones that only carry a value, a matrix or a timestamp: taken and dropped, as
++	 * they always were. Everything else is refused the way IOSurfaceRootUserClient
++	 * refuses a method it has not got. A made-up success is worse than a refusal: the
++	 * window server's GLES renderer asks for selector 6 (wrap a client image) right
++	 * after it attaches the display's surface, then uses what it believes came back --
++	 * zeros, a NULL surface -- and the process dies at 0x30.
++	 */
++	case kSweetSurfaceSetYCbCrMatrix:
++	case kSweetSurfaceSetValue:
++	case kSweetSurfaceSetOwnership:
++	case kSweetSurfaceSetTimestamp:
++	case kSweetSurfaceSetBulkAttachments:
++	case kSweetSurfaceValue40:
++	case kSweetSurfaceValue41:
++	case kSweetSurfaceSetOwnershipIdentity:
+ 		for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
+ 			args->scalarOutput[i] = 0;
+ 		}
+ 		if (args->structureOutput != NULL) {
+ 			bzero(args->structureOutput, args->structureOutputSize);
+ 		}
+-		sweet_surf_log_once("sel", selector);
+ 		return kIOReturnSuccess;
++	default: {
++		/*
++		 * One line for each selector that is refused, with what it came with, so that
++		 * the next one can be looked up in the framework that sent it.
++		 */
++		static uint64_t told;
++		if (selector < 64 && (told & (1ULL << selector)) == 0) {
++			char name[32];
++			proc_selfname(name, sizeof(name));
++			told |= 1ULL << selector;
++			IOLog("SWEET SURF: %s sel %u refused (%s): scalars %u in/%u out, structure %u in/%u out\n",
++			    name, selector, selector == kSweetSurfaceWrapClientImage ? "a client image" :
++			    selector == kSweetSurfaceWrapClientMemory ? "client memory" : "unknown",
++			    args->scalarInputCount, args->scalarOutputCount, args->structureInputSize,
++			    args->structureOutputSize);
++		}
++		return kIOReturnUnsupported;
++	}
+ 	}
+ }
+ 
