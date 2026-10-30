@@ -1,6 +1,6 @@
 --- a/bsd/kern/kern_memorystatus.c
 +++ b/bsd/kern/kern_memorystatus.c
-@@ -4247,6 +4247,13 @@
+@@ -4247,8 +4247,13 @@
  	if (memlimit_is_fatal) {
  		/*
  		 * If this process has no high watermark or has a fatal task limit, then we have been invoked because the task
