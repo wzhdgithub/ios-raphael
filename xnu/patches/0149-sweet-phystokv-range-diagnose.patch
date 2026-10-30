@@ -1,6 +1,6 @@
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -397,10 +397,20 @@
+@@ -397,10 +397,21 @@
  	len = PAGE_SIZE - (pa & PAGE_MASK);
  	if (*max_len > len) {
  		*max_len = len;
