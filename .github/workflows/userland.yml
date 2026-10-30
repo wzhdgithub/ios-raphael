@@ -74,6 +74,13 @@ jobs:
             userland/src/eagl.c userland/src/gl_osmesa.c
           file libhakios.gl.dylib; ls -la libhakios.gl.dylib
 
+      # A marker library for checking that the kernel's exec_inject really puts
+      # DYLD_INSERT_LIBRARIES into the programs it names.
+      - name: build libsweetmark.dylib
+        run: |
+          xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot "$THEOS/sdks/iPhoneOS16.5.sdk" -O1             -dynamiclib -install_name /usr/lib/libsweetmark.dylib -o libsweetmark.dylib userland/src/mark.c
+          file libsweetmark.dylib; ls -la libsweetmark.dylib
+
       # A forked child gets its own task ledger, so it does not inherit the
       # 6 MB per-task jetsam limit launchd puts on the job (see gl_runner.c).
       - name: build gl_runner
@@ -88,7 +95,7 @@ jobs:
       - name: ad-hoc sign the binaries
         run: |
           M=xnu-deps/build/mesa/out
-          codesign --force --sign - --timestamp=none gl_test libhakios.gl.dylib gl_runner
+          codesign --force --sign - --timestamp=none gl_test libhakios.gl.dylib gl_runner libsweetmark.dylib
           codesign --force --sign - --timestamp=none "$M/libOSMesa.8.dylib"
           echo "--- gl_test"; codesign -dvvv gl_test 2>&1 | sed -n '1,8p'
           echo "--- libhakios.gl"; codesign -dvvv libhakios.gl.dylib 2>&1 | sed -n '1,8p'
@@ -105,5 +112,6 @@ jobs:
             xnu-deps/build/mesa/out/gl.xml
             gl_test
             gl_runner
+            libsweetmark.dylib
             libhakios.gl.dylib
           if-no-files-found: error
