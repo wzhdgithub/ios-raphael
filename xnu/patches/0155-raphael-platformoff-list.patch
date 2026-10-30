@@ -1,5 +1,10 @@
 --- a/bsd/kern/sweet_amfi.c
 +++ b/bsd/kern/sweet_amfi.c
+@@ -30,3 +30,4 @@
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode.h>
++#include <sys/vnode_internal.h>
+ #include <security/mac_policy.h>
 @@ -257,14 +257,55 @@
   * revalidation passes the read-only blob itself) get their entitlements here.
   */
