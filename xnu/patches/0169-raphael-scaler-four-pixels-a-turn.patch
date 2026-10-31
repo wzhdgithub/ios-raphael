@@ -1,0 +1,43 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 897436c..5071b72 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -720,22 +720,26 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
+ 					continue;
+ 				}
+ 				/*
+-				 * The destination pixels that read a run of the source are copied as a run:
+-				 * at 1125 to 1080 those are twelve pixels twice in every block of
+-				 * twenty-four. A pixel at a time (two dependent loads each) cost 13.5 ms a
+-				 * frame on the phone, where a row-sized memcpy costs 2.4.
++				 * Four pixels a turn with their four loads independent: one at a time (a load
++				 * for the column and a load through it, and the next pixel only after those)
++				 * cost 13.5 ms a frame, and a memcpy a run of twelve cost as much again --
++				 * the call and the broken prefetch ate what the copy saved.
+ 				 */
+ 				int32_t px = x0;
+ 
+-				while (px < x1) {
+-					int32_t run = px;
+-					int32_t at = fColPick[px];
++				for (; px + 4 <= x1; px += 4) {
++					uint32_t a = srcRow[fColPick[px]];
++					uint32_t b = srcRow[fColPick[px + 1]];
++					uint32_t c = srcRow[fColPick[px + 2]];
++					uint32_t d = srcRow[fColPick[px + 3]];
+ 
+-					while (px + 1 < x1 && fColPick[px + 1] == fColPick[px] + 1) {
+-						px++;
+-					}
+-					memcpy(&fRowBuffer[run], &srcRow[at], (size_t)(px - run + 1) * 4);
+-					px++;
++					fRowBuffer[px] = a;
++					fRowBuffer[px + 1] = b;
++					fRowBuffer[px + 2] = c;
++					fRowBuffer[px + 3] = d;
++				}
++				for (; px < x1; px++) {
++					fRowBuffer[px] = srcRow[fColPick[px]];
+ 				}
+ 				memcpy((void *)(fPixels + (uint64_t)py * fRowBytes + (uint64_t)x0 * 4),
+ 				    fRowBuffer + x0, (size_t)(x1 - x0) * 4);
