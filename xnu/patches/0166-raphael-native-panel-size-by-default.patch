@@ -1,0 +1,18 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 9dc588e..d38b32e 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -267,7 +267,12 @@ AppleCLCD::start(IOService *provider)
+ 		IOLog("SWEET FB: no boot framebuffer\n");
+ 		return false;
+ 	}
+-	int native = 0;
++	/*
++	 * The panel's own size by default: the picture is then 1:1 and a frame costs the vsync
++	 * thread ~2.4 ms (measured, t94k) instead of the 10-18 ms the nearest-neighbour scaling
++	 * to the iPhone X's 1125x2436 did. Boot-arg sweetfb_native=0 brings that layout back.
++	 */
++	int native = 1;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+ 	fLogicalW = fWidth;
+ 	fLogicalH = fHeight;
