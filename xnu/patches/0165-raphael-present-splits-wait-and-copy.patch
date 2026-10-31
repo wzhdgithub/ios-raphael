@@ -1,0 +1,61 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 94c9680..611533e 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -521,9 +521,11 @@ get32(const uint8_t *p, uint32_t off)
+ 
+ /* bsd/dev/hakios.adreno.c: has the GPU finished the submission numbered `fence`? */
+ extern "C" bool hakios_gpu_done(uint32_t fence);
++extern "C" uint32_t hakios_gpu_last(void);
+ 
+ static uint32_t sweet_fb_swaps_logged;
+ static uint32_t sweet_fb_presented;
++static uint32_t sweet_fb_last_drawn;
+ static uint32_t sweet_fb_gone_logged;
+ static uint64_t sweet_fb_swap_count;
+ 
+@@ -567,7 +569,8 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
+ {
+ 	uint32_t mask = get32(rec, 0x104);
+ 	uint64_t began = mach_absolute_time();
+-	uint64_t cost_us;
++	uint64_t cost_us, wait_us;
++	uint64_t wait_ns = 0;
+ 
+ 
+ 	if (!fConsolePaused) {
+@@ -611,10 +614,17 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
+ 		/*
+ 		 * The GPU may still be drawing into it (nothing waits for it on the render thread any
+ 		 * more). Its last submission is the one named here; a millisecond a look, and a copy of
+-		 * a picture not quite finished is better than a panel that stops.
++		 * a picture not quite finished is better than a panel that stops. The wait is counted
++		 * apart from the copy: they are what this thread spends its time on.
+ 		 */
+-		for (unsigned tries = 0; tries < 20 && s->drawn != 0 && !hakios_gpu_done(s->drawn); tries++) {
+-			IOSleep(1);
++		if (s->drawn != 0) {
++			uint64_t wait_began = mach_absolute_time();
++
++			sweet_fb_last_drawn = s->drawn;
++			for (unsigned tries = 0; tries < 20 && !hakios_gpu_done(s->drawn); tries++) {
++				IOSleep(1);
++			}
++			wait_ns += absolutetime_to_nanoseconds(mach_absolute_time() - wait_began);
+ 		}
+ 		uintptr_t src = s->kernelAddress();
+ 		uint32_t bpe = s->bytesPerElement ? s->bytesPerElement : 4;
+@@ -742,9 +752,12 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - began, &nanos);
+ 		cost_us = nanos / 1000;
+ 	}
++	wait_us = wait_ns / 1000;
+ 	sweet_fb_presented++;
+ 	if (sweet_fb_presented <= 16 || (sweet_fb_presented % 512) == 0) {
+-		IOLog("SWEET FB: present %u: the copy took %llu us\n", sweet_fb_presented, cost_us);
++		IOLog("SWEET FB: present %u: %llu us, of which %llu waiting for the GPU and %llu copying"
++		    " (fence %u of %u)\n", sweet_fb_presented, cost_us, wait_us, cost_us - wait_us,
++		    sweet_fb_last_drawn, hakios_gpu_last());
+ 	}
+ }
+ 
