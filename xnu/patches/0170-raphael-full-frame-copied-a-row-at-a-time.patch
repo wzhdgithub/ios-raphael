@@ -1,8 +1,8 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 5071b72..e9073b7 100644
+index 5071b72..ba38741 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -685,6 +685,39 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
+@@ -685,6 +685,42 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
  			if (y1 > (int32_t)fHeight) {
  				y1 = (int32_t)fHeight;
  			}
@@ -13,10 +13,13 @@ index 5071b72..e9073b7 100644
 +			 * the phone; a row-sized memcpy costs 2.4. The 45 columns that do not fit (2%,
 +			 * 22 each side) are cropped, and a layer covering part of the frame still goes
 +			 * the gather's way below.
++			 *
++			 * (In this branch w and h are still the logical frame's: only the crop branch
++			 * clamps them to the panel, which is why the first version of this test never
++			 * matched -- present stayed at 16 ms.)
 +			 */
-+			/* (w and h are the panel's own size by now: the clamps above took the overhang off) */
-+			if (sx == 0 && sy == 0 && dx == 0 && dy == 0 && w == (int32_t)fWidth &&
-+			    h == (int32_t)fHeight) {
++			if (sx == 0 && sy == 0 && dx == 0 && dy == 0 && w == (int32_t)fLogicalW &&
++			    h == (int32_t)fLogicalH) {
 +				int32_t first = fOffX;
 +				int32_t columns = fWidth;
 +
