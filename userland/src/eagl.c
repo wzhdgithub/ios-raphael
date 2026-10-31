@@ -332,6 +332,8 @@ static GLsizei trace_corners = 12;              /* boot-arg gltrace_corners=N: h
 static float trace_middle[2];                   /* ... which is here, as CoreAnimation counts */
 static int trace_listed;                        /* the draw at hand is one of them */
 static int all_shaders;                         /* boot-arg glshaders=1: the text of every shader, not of the first two */
+static int surface_probe;                       /* boot-arg glsurface=1: what the first IOSurfaces hold as they are uploaded */
+static unsigned surface_probed;
 static struct group_texture *group_of(struct eagl *e, GLuint texture);
 static __thread struct eagl *current;
 static struct eagl *contexts[8];
@@ -742,6 +744,17 @@ surface_to_texture(struct eagl *e, struct image *image)
 	}
 	glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
 	glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+	if (surface_probe && surface_probed < 24 && base != NULL && image->width > 0 && image->height > 0) {
+		const uint32_t *words0 = (const uint32_t *)base;
+		const uint32_t *words1 = (const uint32_t *)(base + row * (size_t)(image->height / 2));
+
+		surface_probed++;
+		say("hakios-gl: surface %u into texture %u: %d x %d, %zu a row, format %#x, first %08x %08x, middle %08x
+",
+		    IOSurfaceGetID(surface), image->texture, image->width, image->height, row,
+		    (unsigned)IOSurfaceGetPixelFormat(surface), words0[0], words0[1],
+		    words1[(size_t)(image->width / 2) * pixel / 4]);
+	}
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(row / pixel));
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	glTexImage2D(image->to, 0, (GLint)internal_format(image->internal, image->format), image->width, image->height, 0,
@@ -4240,6 +4253,7 @@ install(void)
 			trace_placed = 1;
 		}
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
+		surface_probe = strstr(arguments, "glsurface=1") != NULL;
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
