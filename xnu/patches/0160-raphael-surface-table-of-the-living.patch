@@ -1,0 +1,58 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index c7fa9e1..5d43c52 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -91,6 +91,12 @@ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
+ void
+ SweetSurface::free()
+ {
++	IOLockLock(sweet_surface_lock);
++	if (sweet_surface_table[id] == this) {
++		sweet_surface_table[id] = NULL;
++		sweet_surface_users[id] = 0;
++	}
++	IOLockUnlock(sweet_surface_lock);
+ 	if (OSDynamicCast(IOBufferMemoryDescriptor, memory) != NULL) {
+ 		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 	}
+@@ -150,7 +156,9 @@ sweet_surface_get(SweetSurface *s)
+ 	bool ok = true;
+ 	IOLockLock(sweet_surface_lock);
+ 	if (sweet_surface_table[s->id] == s) {
+-		sweet_surface_users[s->id]++;
++		if (sweet_surface_users[s->id]++ == 0) {
++			s->retain();            /* (the table's reference comes back with the first user) */
++		}
+ 	} else if (sweet_surface_table[s->id] == NULL) {
+ 		s->retain();
+ 		sweet_surface_table[s->id] = s;
+@@ -163,19 +171,26 @@ sweet_surface_get(SweetSurface *s)
+ }
+ 
+ /* Drop a user; the last one removes the surface from the table. */
+-void
++/*
++ * Drop a user. At zero the table's own reference goes, but the entry itself stays while the
++ * object lives, and SweetSurface::free() takes it out: the window server asks for a surface by
++ * id after it has let its own reference go (its first swap came three lines after the create,
++ * the object still there and drawn into for hours), so the table is a list of the surfaces that
++ * exist, not a cache of the ones somebody is holding.
++ */
++static void
+ sweet_surface_put(SweetSurface *s)
+ {
+ 	bool drop = false;
+ 	IOLockLock(sweet_surface_lock);
+ 	if (sweet_surface_table[s->id] == s && --sweet_surface_users[s->id] == 0) {
+-		sweet_surface_table[s->id] = NULL;
+ 		drop = true;
+ 		if (sweet_surface_goes_logged < 24) {
+ 			char name[32];
+ 			proc_selfname(name, sizeof(name));
+ 			sweet_surface_goes_logged++;
+-			IOLog("SWEET SURF: %s: id %u left the table\n", name, s->id);
++			IOLog("SWEET SURF: %s: id %u has no users left (%u still hold it)\n", name, s->id,
++			    (unsigned)s->getRetainCount());
+ 		}
+ 	}
+ 	IOLockUnlock(sweet_surface_lock);
