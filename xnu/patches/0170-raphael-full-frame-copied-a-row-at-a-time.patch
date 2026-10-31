@@ -1,0 +1,44 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 5071b72..e9073b7 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -685,6 +685,39 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
+ 			if (y1 > (int32_t)fHeight) {
+ 				y1 = (int32_t)fHeight;
+ 			}
++			/*
++			 * A whole frame -- the window server's own swaps -- is copied a row at a time,
++			 * the middle fWidth columns of the row the row map picks. A gather a pixel (one
++			 * at a time, four a turn, or a memcpy a run of twelve) costs 10-17 ms a frame on
++			 * the phone; a row-sized memcpy costs 2.4. The 45 columns that do not fit (2%,
++			 * 22 each side) are cropped, and a layer covering part of the frame still goes
++			 * the gather's way below.
++			 */
++			/* (w and h are the panel's own size by now: the clamps above took the overhang off) */
++			if (sx == 0 && sy == 0 && dx == 0 && dy == 0 && w == (int32_t)fWidth &&
++			    h == (int32_t)fHeight) {
++				int32_t first = fOffX;
++				int32_t columns = fWidth;
++
++				if ((uint64_t)first + columns > s->width) {
++					columns = (int32_t)s->width - first;
++				}
++				if (columns < 0) {
++					columns = 0;
++				}
++				for (int32_t py = 0; py < fHeight && columns > 0; py++) {
++					int32_t ly = fRowMap[py];
++
++					if (ly < 0 || ly >= (int32_t)s->height) {
++						continue;
++					}
++					memcpy((void *)(fPixels + (uint64_t)py * fRowBytes),
++					    (const void *)(src + s->offset + (uint64_t)ly * s->bytesPerRow +
++					    (uint64_t)first * 4), (size_t)columns * 4);
++				}
++				s->release();
++				continue;
++			}
+ 			/*
+ 			 * The column each panel pixel reads, clamped, made once a frame: the inner
+ 			 * loop is then a load and a store a pixel, where two tests a pixel cost
