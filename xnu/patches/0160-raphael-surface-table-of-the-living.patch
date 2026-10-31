@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
-index c7fa9e1..5d43c52 100644
+index c7fa9e1..ed36d5d 100644
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
 @@ -91,6 +91,12 @@ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
@@ -30,7 +30,6 @@ index c7fa9e1..5d43c52 100644
  }
  
  /* Drop a user; the last one removes the surface from the table. */
--void
 +/*
 + * Drop a user. At zero the table's own reference goes, but the entry itself stays while the
 + * object lives, and SweetSurface::free() takes it out: the window server asks for a surface by
@@ -38,7 +37,7 @@ index c7fa9e1..5d43c52 100644
 + * the object still there and drawn into for hours), so the table is a list of the surfaces that
 + * exist, not a cache of the ones somebody is holding.
 + */
-+static void
+ void
  sweet_surface_put(SweetSurface *s)
  {
  	bool drop = false;
