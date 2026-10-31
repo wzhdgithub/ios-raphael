@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index d38b32e..09280d4 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -268,11 +268,11 @@ AppleCLCD::start(IOService *provider)
+ 		return false;
+ 	}
+ 	/*
+-	 * The panel's own size by default: the picture is then 1:1 and a frame costs the vsync
+-	 * thread ~2.4 ms (measured, t94k) instead of the 10-18 ms the nearest-neighbour scaling
+-	 * to the iPhone X's 1125x2436 did. Boot-arg sweetfb_native=0 brings that layout back.
++	 * The iPhone X's 1125x2436 by default: at the panel's own 1080x2340 CoreAnimation's
++	 * surface is the panel's own surface and the picture came out black (t94m, twice),
++	 * where the scaled layout is the one seen working. Boot-arg sweetfb_native=1 tries it.
+ 	 */
+-	int native = 1;
++	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+ 	fLogicalW = fWidth;
+ 	fLogicalH = fHeight;
