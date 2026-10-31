@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index d1289e7..6fb158a 100644
+index d1289e7..1adad92 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -194,6 +194,7 @@ public:
@@ -78,11 +78,16 @@ index d1289e7..6fb158a 100644
  				}
  			}
  		} else if (src != 0 && bpe == 4) {
-@@ -687,6 +695,11 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
+@@ -687,6 +695,16 @@ AppleCLCD::present(const uint8_t *rec, SweetSurface *surfaces[SWEET_FB_LAYERS])
  		}
  		s->release();
  	}
-+	cost_us = absolutetime_to_nanoseconds(mach_absolute_time() - began) / 1000;
++	{
++		uint64_t nanos = 0;
++
++		absolutetime_to_nanoseconds(mach_absolute_time() - began, &nanos);
++		cost_us = nanos / 1000;
++	}
 +	sweet_fb_presented++;
 +	if (sweet_fb_presented <= 16 || (sweet_fb_presented % 512) == 0) {
 +		IOLog("SWEET FB: present %u: the copy took %llu us\n", sweet_fb_presented, cost_us);
