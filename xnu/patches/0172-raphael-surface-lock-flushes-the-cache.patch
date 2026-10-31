@@ -1,0 +1,49 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index ed36d5d..c44f493 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -884,6 +884,26 @@ sweet_surface_held(IOLock *lock, OSArray *refs, uint32_t id)
+ 	return s;
+ }
+ 
++/*
++ * What iOS's IOSurfaceLock and IOSurfaceUnlock do about caches, and what this port was missing:
++ * a surface's pixels are CPU-cached memory (kIOMapDefaultCache) that the GPU writes through the
++ * SMMU, so a processor about to read them must drop the cache's copy and a processor that has
++ * just written them must push its lines out, or the other side reads stale pixels. The icons,
++ * the folder previews and the wallpaper -- pictures the processor draws into a surface and
++ * CoreAnimation samples -- came out black for want of this.
++ * (flush_dcache both cleans and invalidates, so it is the right thing in either direction.)
++ */
++static void
++sweet_surface_cache(SweetSurface *s)
++{
++	uintptr_t base = s->kernelAddress();
++	vm_size_t size = s->offset + (vm_size_t)s->bytesPerRow * (vm_size_t)s->height;
++
++	if (base != 0 && size != 0) {
++		flush_dcache(base, size, FALSE);
++	}
++}
++
+ IOReturn
+ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOut,
+     void *, void *, void *)
+@@ -893,6 +913,8 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
+ 		return kIOReturnNotFound;
+ 	}
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
++
++	sweet_surface_cache(s);         /* (the processor is about to read the pixels) */
+ 	s->release();
+ 	return ret;
+ }
+@@ -907,6 +929,8 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+ 	}
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut,
+ 	    !((uintptr_t)options & kIOSurfaceLockReadOnly));
++
++	sweet_surface_cache(s);         /* (the processor has written them: push its lines out) */
+ 	s->release();
+ 	return ret;
+ }
