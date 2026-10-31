@@ -1,11 +1,14 @@
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 1adad92..4e0634b 100644
+index 1adad92..ac7b39e 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -396,11 +396,33 @@ AppleCLCD::start(IOService *provider)
+@@ -396,11 +396,36 @@ AppleCLCD::start(IOService *provider)
  	return true;
  }
  
++/* The tick the last vsync went off at, for the next one to be placed in the same period. */
++static uint64_t sweet_fb_vsync_began;
++
 +/*
 + * The timer is one-shot, so it is re-armed for what is left of the 16.667 ms period, not for a
 + * whole one: a panel copy that takes 3 ms otherwise costs the display 3 ms of rate -- 50.7
@@ -36,7 +39,7 @@ index 1adad92..4e0634b 100644
  	uint64_t count = ++fb->fVsyncCount;
  	uint64_t values[6] = {
  		(uint32_t)count, (uint32_t)(count >> 32),
-@@ -419,7 +441,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -419,7 +444,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  			/* Already blanked in RequestPowerChange(0): keep the
  			 * vsync cadence for clients, nothing to render. */
  			IOLockUnlock(fb->fLock);
@@ -45,7 +48,7 @@ index 1adad92..4e0634b 100644
  			return;
  		}
  		/* Fade out: halve every channel each vsync, then black, then idle. */
-@@ -436,7 +458,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -436,7 +461,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  				}
  			}
  		}
@@ -54,7 +57,7 @@ index 1adad92..4e0634b 100644
  		return;
  	}
  	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0;
-@@ -461,7 +483,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -461,7 +486,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  		}
  		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
  	}
@@ -63,13 +66,3 @@ index 1adad92..4e0634b 100644
  }
  
  void
-@@ -494,6 +516,9 @@ get32(const uint8_t *p, uint32_t off)
- /* bsd/dev/hakios.adreno.c: has the GPU finished the submission numbered `fence`? */
- extern "C" bool hakios_gpu_done(uint32_t fence);
- 
-+/* The tick the last vsync went off at, for the next one to be placed in the same period. */
-+static uint64_t sweet_fb_vsync_began;
-+
- static uint32_t sweet_fb_swaps_logged;
- static uint32_t sweet_fb_presented;
- static uint32_t sweet_fb_gone_logged;
