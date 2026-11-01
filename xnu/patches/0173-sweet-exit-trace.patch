@@ -1,5 +1,5 @@
 diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
-index fde499c..113f2e4 100644
+index fde499c..f0b58fd 100644
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
 @@ -1448,6 +1448,11 @@ exit(proc_t p, struct exit_args *uap, int *retval)
@@ -14,10 +14,14 @@ index fde499c..113f2e4 100644
  int
  exit1(proc_t p, int rv, int *retval)
  {
-@@ -1485,6 +1490,22 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
- 	}
- #endif
- 
+@@ -1480,8 +1485,20 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+ 	 * Example usage: panic_on_error_exit=launchd,logd,watchdogd
+ 	 */
+ 	if (rv && strnstr(panic_on_eexit_pcomms, p->p_comm, sizeof(panic_on_eexit_pcomms))) {
+-		panic("%s: Process %s with pid %d exited on error with code 0x%x.",
+-		    __FUNCTION__, p->p_comm, proc_getpid(p), rv);
++#endif
++
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	/*
 +	 * SWEET exit trace (boot-arg sweetexit=1): every voluntary exit and jetsam
@@ -25,15 +29,11 @@ index fde499c..113f2e4 100644
 +	 * with its exit code and reason.
 +	 */
 +	if (sweet_exit_trace) {
-+		printf("SWEET EXIT: %s[%d] rv=0x%x reason ns=%u code=%llu%s
-+",
++		printf("SWEET EXIT: %s[%d] rv=0x%x reason ns=%u code=%llu%s\n",
 +		    p->p_comm, proc_getpid(p), rv,
 +		    exit_reason != OS_REASON_NULL ? exit_reason->osr_namespace : 0,
 +		    exit_reason != OS_REASON_NULL ? exit_reason->osr_code : 0,
 +		    jetsam_flags != 0 ? " jetsam" : "");
-+	}
-+#endif
-+
- 	/*
- 	 * If a thread in this task has already
- 	 * called exit(), then halt any others
+ 	}
+ #endif
+ 
