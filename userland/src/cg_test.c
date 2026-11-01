@@ -109,7 +109,7 @@ main(int argc, char **argv)
 			printf("cg_test: (another process) surface %s not found\n", argv[2]);
 			return 1;
 		}
-		look("(another process)", surface, SIZE);
+		look("(another process)", surface, (int)IOSurfaceGetWidth(surface));
 		return 0;
 	}
 	CGContextRef (*create)(IOSurfaceRef, size_t, size_t, size_t, size_t, CGColorSpaceRef, CGBitmapInfo) =
