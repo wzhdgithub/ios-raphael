@@ -1,0 +1,38 @@
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+index a6dc858..993ffdd 100644
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1448,6 +1448,11 @@ exit(proc_t p, struct exit_args *uap, int *retval)
+  * to zombie, and unlink proc from allproc and parent's lists.  Save exit
+  * status and rusage for wait().  Check for child processes and orphan them.
+  */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* SWEET exit trace (sweetexit=1): one line per voluntary exit or jetsam kill. */
++TUNABLE(uint32_t, sweet_exit_trace, "sweetexit", 0);
++#endif
++
+ int
+ exit1(proc_t p, int rv, int *retval)
+ {
+@@ -1485,6 +1490,21 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+ 	}
+ #endif
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * SWEET exit trace (boot-arg sweetexit=1): every voluntary exit and jetsam
++	 * kill passes here, so a daemon that vanishes without a signal names itself
++	 * with its exit code and reason.
++	 */
++	if (sweet_exit_trace) {
++		printf("SWEET EXIT: %s[%d] rv=0x%x reason ns=%u code=%llu%s\n",
++		    p->p_comm, proc_getpid(p), rv,
++		    exit_reason != OS_REASON_NULL ? exit_reason->osr_namespace : 0,
++		    exit_reason != OS_REASON_NULL ? exit_reason->osr_code : 0,
++		    jetsam_flags != 0 ? " jetsam" : "");
++	}
++#endif
++
+ 	/*
+ 	 * If a thread in this task has already
+ 	 * called exit(), then halt any others
