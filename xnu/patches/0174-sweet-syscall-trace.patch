@@ -1,0 +1,133 @@
+diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
+index 7fd9be1..833d810 100644
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -41,6 +41,13 @@ extern int32_t dtrace_systrace_syscall(struct proc *, void *, int *);
+ extern void dtrace_systrace_syscall_return(unsigned short, int, int *);
+ #endif  /* CONFIG_DTRACE */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* SWEET syscall trace (bsd/dev/sweet_sample.c); board macro via proc_reg.h. */
++extern int sweet_sc_enabled;
++extern void sweet_syscall_trace(struct proc *, unsigned int,
++    unsigned long long, unsigned long long, unsigned long long);
++#endif
++
+ extern void
+ unix_syscall(struct arm_saved_state * regs, thread_t thread_act, struct proc * proc);
+ 
+@@ -177,6 +184,13 @@ unix_syscall(
+ 	}
+ #endif /* CONFIG_DEBUG_SYSCALL_REJECTION */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (__improbable(sweet_sc_enabled)) {
++		sweet_syscall_trace(proc, code, (unsigned long long)uthread->uu_arg[0],
++		    (unsigned long long)uthread->uu_arg[1], (unsigned long long)uthread->uu_arg[2]);
++	}
++#endif
++
+ 	AUDIT_SYSCALL_ENTER(code, proc, uthread);
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index b40eccd..7eae76c 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -78,10 +78,96 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+ 	}
+ }
+ 
++/*
++ * SWEET syscall trace: how far does a daemon that never answers get before it
++ * parks? bsd/dev/arm/systemcalls.c calls sweet_syscall_trace() just before it
++ * runs a system call, for the processes named in boot-arg sweetsc (comma
++ * separated, "-" = off; the names are compared with p_comm, so 16 characters).
++ * Each call prints as "SC name[pid] <code> 0x<a0> 0x<a1> 0x<a2>" -- at most 700
++ * lines per process and 2000 in all, because a boot makes millions of calls.
++ * tools/sc_decode.py turns the numbers into names with syscalls.master.
++ */
++int sweet_sc_enabled;
++
++static char sweet_sc_names[128];
++static int sweet_sc_total;
++
++struct sweet_sc_proc {
++	int pid;
++	int lines;
++};
++static struct sweet_sc_proc sweet_sc_procs[64];
++
++void
++sweet_sc_init(void)
++{
++	char names[128];
++
++	if (PE_parse_boot_argn("sweetsc", names, sizeof(names)) && names[0] != '-') {
++		strlcpy(sweet_sc_names, names, sizeof(sweet_sc_names));
++		sweet_sc_enabled = 1;
++	}
++}
++
++void
++sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
++    unsigned long long a1, unsigned long long a2)
++{
++	const char *name;
++	size_t nlen;
++	int i, slot, pid;
++
++	if (sweet_sc_total >= 2000) {
++		return;
++	}
++	name = p->p_comm;
++	nlen = strlen(name);
++	for (const char *t = sweet_sc_names; *t;) {
++		const char *end = strchr(t, ',');
++		size_t tl = end ? (size_t)(end - t) : strlen(t);
++		if (tl == nlen && nlen > 0 && strncmp(t, name, nlen) == 0) {
++			break;
++		}
++		if (!end) {
++			return;
++		}
++		t = end + 1;
++	}
++	pid = proc_pid(p);
++	slot = -1;
++	for (i = 0; i < 64; i++) {
++		if (sweet_sc_procs[i].pid == pid) {
++			break;
++		}
++		if (sweet_sc_procs[i].pid == 0 && slot < 0) {
++			slot = i;
++		}
++	}
++	if (i == 64) {
++		if (slot < 0) {
++			return;
++		}
++		i = slot;
++		sweet_sc_procs[i].pid = pid;
++		sweet_sc_procs[i].lines = 0;
++	}
++	if (sweet_sc_procs[i].lines > 700) {
++		return;
++	}
++	if (sweet_sc_procs[i].lines++ == 700) {
++		printf("SC %s[%d] --- 700 calls, quiet from now on\n", name, pid);
++		return;
++	}
++	sweet_sc_total++;
++	printf("SC %s[%d] %u 0x%llx 0x%llx 0x%llx\n", name, pid, code, a0, a1, a2);
++}
++
+ void
+ sweet_sample_start(void)
+ {
+ 	thread_t thread;
++
++	sweet_sc_init();
+ 	if (kernel_thread_start(sweet_sample_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
