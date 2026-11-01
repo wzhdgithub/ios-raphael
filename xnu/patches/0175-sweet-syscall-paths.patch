@@ -1,0 +1,144 @@
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index 7eae76c..a8a52fa 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -109,6 +109,27 @@ sweet_sc_init(void)
+ 	}
+ }
+ 
++/* osfmk/arm64/copyio.c; no BSD header declares it for us. */
++extern int copyinstr(user_addr_t user_addr, char *kernel_addr, vm_size_t nbytes,
++    vm_size_t *lencopied);
++
++/*
++ * SWEET syscall trace, part 2: for the calls that name a file, print the path
++ * itself instead of the pointer -- that is what shows what a daemon cannot
++ * find. The numbers are xnu-8796's syscall codes (bsd/kern/syscalls.master):
++ * 5 open, 398 open_nocancel, 463 openat (path is the second argument), 33
++ * access, 338 stat64, 340 lstat64, 220 getattrlist, 240 listxattr, 58 readlink,
++ * 10 unlink, 136 mkdir, 12 chdir, 138 utimes, 34 chflags, 128 rename (both).
++ */
++static void
++sweet_sc_path(unsigned long long uaddr, char *out, size_t len)
++{
++	out[0] = 0;
++	if (uaddr == 0 || copyinstr((user_addr_t)uaddr, out, (vm_size_t)len, NULL) != 0) {
++		strlcpy(out, "(unreadable)", len);
++	}
++}
++
+ void
+ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+     unsigned long long a1, unsigned long long a2)
+@@ -159,6 +180,30 @@ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+ 		return;
+ 	}
+ 	sweet_sc_total++;
++	switch (code) {
++	case 5: case 10: case 12: case 33: case 34: case 58: case 136: case 138:
++	case 220: case 240: case 338: case 340: case 398: case 463:
++		{
++			char path[128];
++			unsigned long long upath = (code == 463) ? a1 : a0;
++
++			sweet_sc_path(upath, path, sizeof(path));
++			printf("SC %s[%d] %u \"%s\" 0x%llx 0x%llx\n", name, pid, code, path,
++			    (code == 463) ? a0 : a1, a2);
++		}
++		return;
++	case 128:
++		{
++			char from[128], to[128];
++
++			sweet_sc_path(a0, from, sizeof(from));
++			sweet_sc_path(a1, to, sizeof(to));
++			printf("SC %s[%d] 128 \"%s\" -> \"%s\"\n", name, pid, from, to);
++		}
++		return;
++	default:
++		break;
++	}
+ 	printf("SC %s[%d] %u 0x%llx 0x%llx 0x%llx\n", name, pid, code, a0, a1, a2);
+ }
+ 
+diff --git a/edit_0175.py b/edit_0175.py
+new file mode 100644
+index 0000000..393a4da
+--- /dev/null
++++ b/edit_0175.py
+@@ -0,0 +1,75 @@
++"""Author patch 0175: print the path argument of file-naming system calls."""
++import sys
++
++HELPERS = '''/*
++ * SWEET syscall trace, part 2: for the calls that name a file, print the path
++ * itself instead of the pointer -- that is what shows what a daemon cannot
++ * find. The numbers are xnu-8796's syscall codes (bsd/kern/syscalls.master):
++ * 5 open, 398 open_nocancel, 463 openat (path is the second argument), 33
++ * access, 338 stat64, 340 lstat64, 220 getattrlist, 240 listxattr, 58 readlink,
++ * 10 unlink, 136 mkdir, 12 chdir, 138 utimes, 34 chflags, 128 rename (both).
++ */
++static void
++sweet_sc_path(unsigned long long uaddr, char *out, size_t len)
++{
++	out[0] = 0;
++	if (uaddr == 0 || copyinstr((user_addr_t)uaddr, out, (vm_size_t)len, NULL) != 0) {
++		strlcpy(out, "(unreadable)", len);
++	}
++}
++
++'''
++
++PROTO = '''/* osfmk/arm64/copyio.c; no BSD header declares it for us. */
++extern int copyinstr(user_addr_t user_addr, char *kernel_addr, vm_size_t nbytes,
++    vm_size_t *lencopied);
++
++'''
++
++BLOCK = '''	sweet_sc_total++;
++	switch (code) {
++	case 5: case 10: case 12: case 33: case 34: case 58: case 136: case 138:
++	case 220: case 240: case 338: case 340: case 398: case 463:
++		{
++			char path[128];
++			unsigned long long upath = (code == 463) ? a1 : a0;
++
++			sweet_sc_path(upath, path, sizeof(path));
++			printf("SC %s[%d] %u \\"%s\\" 0x%llx 0x%llx\\n", name, pid, code, path,
++			    (code == 463) ? a0 : a1, a2);
++		}
++		return;
++	case 128:
++		{
++			char from[128], to[128];
++
++			sweet_sc_path(a0, from, sizeof(from));
++			sweet_sc_path(a1, to, sizeof(to));
++			printf("SC %s[%d] 128 \\"%s\\" -> \\"%s\\"\\n", name, pid, from, to);
++		}
++		return;
++	default:
++		break;
++	}
++'''
++
++OLD = '''	sweet_sc_total++;
++	printf("SC %s[%d] %u 0x%llx 0x%llx 0x%llx\\n", name, pid, code, a0, a1, a2);
++'''
++NEW = OLD.rstrip('\n') + '\n'
++
++
++def sub(text, old, new, path):
++    if text.count(old) != 1:
++        sys.exit('%s: anchor %r found %d times' % (path, old[:40], text.count(old)))
++    return text.replace(old, new, 1)
++
++
++p = 'bsd/dev/sweet_sample.c'
++t = open(p, encoding='utf-8', newline='').read()
++# the helper goes right above sweet_syscall_trace()
++t = sub(t, 'void\nsweet_syscall_trace(proc_t p,', PROTO + HELPERS + 'void\nsweet_syscall_trace(proc_t p,', p)
++# and the path block replaces the plain numeric print for the calls that name a file
++t = sub(t, OLD, BLOCK + '\tprintf("SC %s[%d] %u 0x%llx 0x%llx 0x%llx\\n", name, pid, code, a0, a1, a2);\n', p)
++open(p, 'w', encoding='utf-8', newline='').write(t)
++print('edited')
