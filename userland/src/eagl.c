@@ -749,11 +749,11 @@ surface_to_texture(struct eagl *e, struct image *image)
 		const uint32_t *words1 = (const uint32_t *)(base + row * (size_t)(image->height / 2));
 
 		surface_probed++;
-		say("hakios-gl: surface %u into texture %u: %d x %d, %zu a row, format %#x, first %08x %08x, middle %08x
-",
-		    IOSurfaceGetID(surface), image->texture, image->width, image->height, row,
-		    (unsigned)IOSurfaceGetPixelFormat(surface), words0[0], words0[1],
-		    words1[(size_t)(image->width / 2) * pixel / 4]);
+		say("hakios-gl: surface %u into texture %u: %d x %d, %zu a row, format %#x,"
+		    " first %08x %08x, middle %08x
+", IOSurfaceGetID(surface), image->texture,
+		    image->width, image->height, row, (unsigned)IOSurfaceGetPixelFormat(surface),
+		    words0[0], words0[1], words1[(size_t)(image->width / 2) * pixel / 4]);
 	}
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(row / pixel));
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
