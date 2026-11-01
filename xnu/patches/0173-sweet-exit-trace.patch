@@ -1,5 +1,5 @@
 diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
-index a6dc858..993ffdd 100644
+index fde499c..113f2e4 100644
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
 @@ -1448,6 +1448,11 @@ exit(proc_t p, struct exit_args *uap, int *retval)
@@ -14,7 +14,7 @@ index a6dc858..993ffdd 100644
  int
  exit1(proc_t p, int rv, int *retval)
  {
-@@ -1485,6 +1490,21 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+@@ -1485,6 +1490,22 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
  	}
  #endif
  
@@ -25,7 +25,8 @@ index a6dc858..993ffdd 100644
 +	 * with its exit code and reason.
 +	 */
 +	if (sweet_exit_trace) {
-+		printf("SWEET EXIT: %s[%d] rv=0x%x reason ns=%u code=%llu%s\n",
++		printf("SWEET EXIT: %s[%d] rv=0x%x reason ns=%u code=%llu%s
++",
 +		    p->p_comm, proc_getpid(p), rv,
 +		    exit_reason != OS_REASON_NULL ? exit_reason->osr_namespace : 0,
 +		    exit_reason != OS_REASON_NULL ? exit_reason->osr_code : 0,
