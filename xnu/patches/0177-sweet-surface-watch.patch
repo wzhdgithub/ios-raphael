@@ -1,0 +1,112 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index c44f493..1edcb81 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -678,6 +678,83 @@ IOSurfaceRootUserClient::returnSurface(SweetSurface *s, IOExternalMethodArgument
+ 	return ret;
+ }
+ 
++/*
++ * SWEET 0177: does anybody ever write the pictures CoreAnimation shows? The window server makes
++ * surfaces of the icon shapes with no pixel format, and the library inside backboardd reads them
++ * as all zero as it uploads them as textures. Patch 0172 already flushes the cache at lock time,
++ * so "the cache is lying" is a weak answer: read the same memory here, in the kernel, where no
++ * process's mapping can hide anything, and say who locked the surface, for reading or writing,
++ * what its seed is, and how many bytes of it are not zero. At most 24 surfaces are watched (the
++ * icon shapes: no pixel format, four bytes a pixel, no planes, 16 to 260 a side) and at most 240
++ * lines are written, because a home screen locks its surfaces every frame.
++ */
++#define SWEET_WATCH_MAX  24
++static uint32_t sweet_watch_ids[SWEET_WATCH_MAX];
++static int sweet_watch_n;
++static int sweet_watch_logged;
++
++static bool
++sweet_watch_shape(SweetSurface *s)
++{
++	return s->pixelFormat == 0 && s->bytesPerElement == 4 && s->planeCount == 0 &&
++	    s->width >= 16 && s->width <= 260 && s->height >= 16 && s->height <= 260;
++}
++
++static void
++sweet_watch_remember(SweetSurface *s)
++{
++	if (!sweet_watch_shape(s)) {
++		return;
++	}
++	for (int i = 0; i < sweet_watch_n; i++) {
++		if (sweet_watch_ids[i] == s->id) {
++			return;
++		}
++	}
++	if (sweet_watch_n < SWEET_WATCH_MAX) {
++		sweet_watch_ids[sweet_watch_n++] = s->id;
++		IOLog("SWEET WATCH: id %u (%ux%u) is one of the shapes that shows pictures\n", s->id,
++		    s->width, s->height);
++	}
++}
++
++static bool
++sweet_watch_wants(uint32_t id)
++{
++	for (int i = 0; i < sweet_watch_n; i++) {
++		if (sweet_watch_ids[i] == id) {
++			return true;
++		}
++	}
++	return false;
++}
++
++static void
++sweet_watch_say(const char *what, SweetSurface *s, bool forwrite)
++{
++	char name[32];
++	uintptr_t base = s->kernelAddress();
++	vm_size_t n = s->offset + (vm_size_t)s->bytesPerRow * (vm_size_t)s->height;
++	const unsigned char *pixels;
++	size_t nz = 0;
++
++	if (!sweet_watch_wants(s->id) || base == 0 || sweet_watch_logged >= 240) {
++		return;
++	}
++	if (n > (vm_size_t)s->allocSize) {
++		n = (vm_size_t)s->allocSize;
++	}
++	pixels = (const unsigned char *)base;
++	for (vm_size_t at = 0; at < n; at++) {
++		nz += pixels[at] != 0;
++	}
++	sweet_watch_logged++;
++	proc_selfname(name, sizeof(name));
++	IOLog("SWEET WATCH: %s %s id %u %ux%u seed %u%s: non-zero %lu of %lu\n", name, what, s->id,
++	    s->width, s->height, *sweet_surface_seed(s), forwrite ? " for write" : "",
++	    (unsigned long)nz, (unsigned long)n);
++}
++
+ IOReturn
+ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ {
+@@ -742,6 +819,7 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		IOLog("SWEET SURF: %s create id %u %ux%u fmt 0x%x bpe %u bpr %u planes %u size %u keys %u -> 0x%x\n",
+ 		    name, s->id, s->width, s->height, s->pixelFormat, s->bytesPerElement,
+ 		    s->bytesPerRow, s->planeCount, s->allocSize, props->getCount(), ret);
++		sweet_watch_remember(s);
+ 	}
+ 	props->release();
+ 	if (ret != kIOReturnSuccess) {
+@@ -915,6 +993,7 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
+ 
+ 	sweet_surface_cache(s);         /* (the processor is about to read the pixels) */
++	sweet_watch_say("lock", s, false);
+ 	s->release();
+ 	return ret;
+ }
+@@ -931,6 +1010,7 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+ 	    !((uintptr_t)options & kIOSurfaceLockReadOnly));
+ 
+ 	sweet_surface_cache(s);         /* (the processor has written them: push its lines out) */
++	sweet_watch_say("unlock", s, !((uintptr_t)options & kIOSurfaceLockReadOnly));
+ 	s->release();
+ 	return ret;
+ }
