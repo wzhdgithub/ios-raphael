@@ -163,11 +163,68 @@ out:
 	}
 }
 
+/*
+ * Look at the surfaces this machine is holding right now, from a process that is not the
+ * window server. If backboardd reads its icon surfaces as empty and they are not empty here,
+ * the port is hiding memory from one process; if they are empty here too, nothing ever drew.
+ */
+static void
+scan_live_surfaces(void)
+{
+	IOSurfaceRef (*lookup)(IOSurfaceID) = (IOSurfaceRef (*)(IOSurfaceID))dlsym(RTLD_DEFAULT, "IOSurfaceLookup");
+	int found = 0, empty = 0;
+
+	if (lookup == NULL) {
+		printf("PROBE IOSurfaceLookup is NOT THERE\n");
+		return;
+	}
+	for (IOSurfaceID id = 1; id <= 96 && found < 24; id++) {
+		IOSurfaceRef surface = lookup(id);
+		size_t width, height, row, alloc, used, nz = 0;
+		uint32_t format;
+		const unsigned char *pixels;
+		uint32_t seed = 0;
+
+		if (surface == NULL) {
+			continue;
+		}
+		width = IOSurfaceGetWidth(surface);
+		height = IOSurfaceGetHeight(surface);
+		format = IOSurfaceGetPixelFormat(surface);
+		row = IOSurfaceGetBytesPerRow(surface);
+		alloc = IOSurfaceGetAllocSize(surface);
+		if (format != 0 || width < 16 || width > 260 || height < 16 || height > 260) {
+			CFRelease(surface);
+			continue;
+		}
+		found++;
+		if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, &seed) == 0) {
+			pixels = (const unsigned char *)IOSurfaceGetBaseAddress(surface);
+			used = row * (height - 1) + width * IOSurfaceGetBytesPerElement(surface);
+			if (used > alloc) {
+				used = alloc;
+			}
+			for (size_t at = 0; at < used; at++) {
+				nz += pixels[at] != 0;
+			}
+			IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, &seed);
+		}
+		printf("PROBE live surface %u: %zu x %zu, %zu a row, %zu bytes, seed %u, non-zero %zu\n", id,
+		    width, height, row, alloc, IOSurfaceGetSeed(surface), nz);
+		if (nz == 0) {
+			empty++;
+		}
+		CFRelease(surface);
+	}
+	printf("PROBE scan: %d no-format surfaces of the icon shapes, %d of them empty\n", found, empty);
+}
+
 int
 main(void)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("PROBE icon_probe starts\n");
+	scan_live_surfaces();
 	show_file("/Applications/AppStore.app/Assets.car");
 	show_file("/Applications/AppStore.app/AppIcon60x60@2x.png");
 	show_file("/Applications/Camera.app/AppIcon60x60@2x.png");
