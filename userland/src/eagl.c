@@ -711,7 +711,7 @@ surface_to_texture(struct eagl *e, struct image *image)
 	size_t row = planar ? IOSurfaceGetBytesPerRowOfPlane(surface, image->plane) : IOSurfaceGetBytesPerRow(surface);
 	unsigned pixel = bytes_a_pixel(image->format, image->type);
 	GLint row_length = 0, alignment = 4;
-	uint8_t *base, *flipped = NULL;
+	uint8_t *base, *flipped = NULL, *mapped = NULL;
 	bool alpha_first = image->alpha_first && !planar && pixel == 4;
 
 	if (image->shared) {
@@ -722,6 +722,7 @@ surface_to_texture(struct eagl *e, struct image *image)
 		return;
 	}
 	base = planar ? IOSurfaceGetBaseAddressOfPlane(surface, image->plane) : IOSurfaceGetBaseAddress(surface);
+	mapped = base;
 	if ((image->invert || alpha_first) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
 		for (GLsizei y = 0; y < image->height; y++) {
 			const uint8_t *from = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
@@ -744,15 +745,28 @@ surface_to_texture(struct eagl *e, struct image *image)
 	}
 	glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
 	glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
-	if (surface_probe && surface_probed < 24 && base != NULL && image->width > 0 && image->height > 0) {
-		const uint32_t *words0 = (const uint32_t *)base;
-		const uint32_t *words1 = (const uint32_t *)(base + row * (size_t)(image->height / 2));
+	if (surface_probe && surface_probed < 40 && mapped != NULL && image->width > 0 && image->height > 0 &&
+	    IOSurfaceGetPixelFormat(surface) == 0) {
+		size_t room = IOSurfaceGetAllocSize(surface);
+		size_t n = row * (size_t)image->height, lane[4] = { 0, 0, 0, 0 }, nz = 0;
+		const uint32_t *words = (const uint32_t *)mapped;
 
+		/* never read past what the surface actually owns, and only when there is a word to read */
+		if (n > room) {
+			n = room;
+		}
+		for (size_t at = 0; at < n; at++) {
+			if (mapped[at] != 0) {
+				nz++;
+				lane[at & 3]++;
+			}
+		}
 		surface_probed++;
-		say("hakios-gl: surface %u into texture %u: %d x %d, %zu a row, format %#x, first"
-		    " %08x %08x, middle %08x\n", IOSurfaceGetID(surface), image->texture,
-		    image->width, image->height, row, (unsigned)IOSurfaceGetPixelFormat(surface),
-		    words0[0], words0[1], words1[(size_t)(image->width / 2) * pixel / 4]);
+		say("hakios-gl: surface %u into texture %u: %d x %d, %zu a row, %zu bytes, no pixel format:"
+		    " first %08x %08x, not zero %zu (by place in the pixel %zu %zu %zu %zu), %s swizzled\n",
+		    IOSurfaceGetID(surface), image->texture, image->width, image->height, row, n,
+		    n >= 8 ? words[0] : 0, n >= 8 ? words[1] : 0, nz, lane[0], lane[1], lane[2], lane[3],
+		    base == flipped ? "was" : "was not");
 	}
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(row / pixel));
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
