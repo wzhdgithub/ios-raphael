@@ -3971,7 +3971,14 @@ my_texImageIOSurface(id self, SEL selector, IOSurfaceRef surface, unsigned long 
 		    IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), IOSurfaceGetPlaneCount(surface), texture, width,
 		    height, plane, invert ? ", inverted" : "");
 	}
-	image->wrapped = IOSurfaceGetPixelFormat(surface) == 0;
+	/*
+	 * No pixel format means the same thing -attachImage: has: memory CoreAnimation made a
+	 * surface around, a picture an application drew, and its bytes are opacity first.  Told to
+	 * the texture as plain RGBA an opaque black sign comes back alpha 0 and is not drawn at all,
+	 * which is what a home screen of black squares is; surface_to_texture() puts the four in the
+	 * order OpenGL ES was told.
+	 */
+	image->wrapped = image->alpha_first = IOSurfaceGetPixelFormat(surface) == 0;
 	began = now_us();
 	if (!surface_shared(e, image)) {
 		surface_changed(e, image);              /* (what it adds up to now) */
