@@ -1,0 +1,72 @@
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index 627e629..528a421 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -83,9 +83,11 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+  * parks? bsd/dev/arm/systemcalls.c calls sweet_syscall_trace() just before it
+  * runs a system call, for the processes named in boot-arg sweetsc (comma
+  * separated, "-" = off; the names are compared with p_comm, so 16 characters).
+- * Each call prints as "SC name[pid] <code> 0x<a0> 0x<a1> 0x<a2>" -- at most 700
+- * lines per process and 2000 in all, because a boot makes millions of calls.
+- * tools/sc_decode.py turns the numbers into names with syscalls.master.
++ * Each call prints as "SC name[pid] <code> ..." -- the calls that carry a path get 2500 lines
++ * per process and everything else 300, with 12000 in all. The split matters: with one shared
++ * budget of 700, SpringBoard's boot chatter (its own bundle, then its dylibs) used it all up
++ * before the desktop was ever composited, and "no icon file was opened" turned out to be the
++ * cap talking rather than the process.
+  */
+ int sweet_sc_enabled;
+ 
+@@ -94,7 +96,8 @@ static int sweet_sc_total;
+ 
+ struct sweet_sc_proc {
+ 	int pid;
+-	int lines;
++	int lines;                /* (calls that carry a path) */
++	int other;                /* (everything else, which is noise but interesting once) */
+ 	int errs;
+ };
+ static struct sweet_sc_proc sweet_sc_procs[64];
+@@ -179,6 +182,7 @@ sweet_sc_slot(pid_t pid)
+ 	}
+ 	sweet_sc_procs[slot].pid = pid;
+ 	sweet_sc_procs[slot].lines = 0;
++	sweet_sc_procs[slot].other = 0;
+ 	sweet_sc_procs[slot].errs = 0;
+ 	return &sweet_sc_procs[slot];
+ }
+@@ -207,9 +211,9 @@ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+ {
+ 	const char *name;
+ 	struct sweet_sc_proc *sp;
+-	int i, pid;
++	int i, pid, path;
+ 
+-	if (sweet_sc_total >= 2000) {
++	if (sweet_sc_total >= 12000) {
+ 		return;
+ 	}
+ 	name = sweet_sc_named(p);
+@@ -222,11 +226,19 @@ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+ 		return;
+ 	}
+ 	i = (int)(sp - sweet_sc_procs);
+-	if (sweet_sc_procs[i].lines > 700) {
++	path = code == 5 || code == 10 || code == 12 || code == 33 || code == 34 || code == 58 ||
++	    code == 136 || code == 138 || code == 128 || code == 220 || code == 240 ||
++	    code == 338 || code == 340 || code == 398 || code == 463;
++	if (path ? sweet_sc_procs[i].lines > 2500 : sweet_sc_procs[i].other > 300) {
+ 		return;
+ 	}
+-	if (sweet_sc_procs[i].lines++ == 700) {
+-		printf("SC %s[%d] --- 700 calls, quiet from now on\n", name, pid);
++	if (path) {
++		if (sweet_sc_procs[i].lines++ == 2500) {
++			printf("SC %s[%d] --- 2500 calls with a path, quiet from now on\n", name, pid);
++			return;
++		}
++	} else if (sweet_sc_procs[i].other++ == 300) {
++		printf("SC %s[%d] --- 300 other calls, quiet from now on\n", name, pid);
+ 		return;
+ 	}
+ 	sweet_sc_total++;
