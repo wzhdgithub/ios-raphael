@@ -1,0 +1,156 @@
+diff --git a/bsd/dev/arm/systemcalls.c b/bsd/dev/arm/systemcalls.c
+index 833d810..482e256 100644
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -46,6 +46,7 @@ extern void dtrace_systrace_syscall_return(unsigned short, int, int *);
+ extern int sweet_sc_enabled;
+ extern void sweet_syscall_trace(struct proc *, unsigned int,
+     unsigned long long, unsigned long long, unsigned long long);
++extern void sweet_syscall_error(struct proc *, unsigned int, int);
+ #endif
+ 
+ extern void
+@@ -195,6 +196,12 @@ unix_syscall(
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (__improbable(sweet_sc_enabled && error != 0)) {
++		sweet_syscall_error(proc, code, error);
++	}
++#endif
++
+ #if CONFIG_MACF
+ skip_syscall:
+ #endif /* CONFIG_MACF */
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index 66a3a18..627e629 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -95,6 +95,7 @@ static int sweet_sc_total;
+ struct sweet_sc_proc {
+ 	int pid;
+ 	int lines;
++	int errs;
+ };
+ static struct sweet_sc_proc sweet_sc_procs[64];
+ 
+@@ -131,48 +132,96 @@ sweet_sc_path(unsigned long long uaddr, char *out, size_t len)
+ 	}
+ }
+ 
+-void
+-sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+-    unsigned long long a1, unsigned long long a2)
++/*
++ * SWEET syscall errors (bsd/dev/arm/systemcalls.c calls this when a traced call
++ * returned an error): the numbers alone only say how far a daemon got, the
++ * errno says why it stopped. Same sweetsc name list as the call trace, printed
++ * as "SCE name[pid] <code> err=<errno>", 250 lines per process, 1000 in all.
++ */
++static int sweet_sc_err_total;
++
++static const char *
++sweet_sc_named(proc_t p)
+ {
+-	const char *name;
+-	size_t nlen;
+-	int i, slot, pid;
++	const char *name = p->p_comm;
++	size_t nlen = strlen(name);
+ 
+-	if (sweet_sc_total >= 2000) {
+-		return;
+-	}
+-	name = p->p_comm;
+-	nlen = strlen(name);
+ 	for (const char *t = sweet_sc_names; *t;) {
+ 		const char *end = strchr(t, ',');
+ 		size_t tl = end ? (size_t)(end - t) : strlen(t);
+ 		if (tl == nlen && nlen > 0 && strncmp(t, name, nlen) == 0) {
+-			break;
++			return name;
+ 		}
+ 		if (!end) {
+-			return;
++			return NULL;
+ 		}
+ 		t = end + 1;
+ 	}
+-	pid = proc_pid(p);
++	return NULL;
++}
++
++static struct sweet_sc_proc *
++sweet_sc_slot(pid_t pid)
++{
++	int i, slot;
++
+ 	slot = -1;
+ 	for (i = 0; i < 64; i++) {
+ 		if (sweet_sc_procs[i].pid == pid) {
+-			break;
++			return &sweet_sc_procs[i];
+ 		}
+ 		if (sweet_sc_procs[i].pid == 0 && slot < 0) {
+ 			slot = i;
+ 		}
+ 	}
+-	if (i == 64) {
+-		if (slot < 0) {
+-			return;
+-		}
+-		i = slot;
+-		sweet_sc_procs[i].pid = pid;
+-		sweet_sc_procs[i].lines = 0;
++	if (slot < 0) {
++		return NULL;
++	}
++	sweet_sc_procs[slot].pid = pid;
++	sweet_sc_procs[slot].lines = 0;
++	sweet_sc_procs[slot].errs = 0;
++	return &sweet_sc_procs[slot];
++}
++
++void
++sweet_syscall_error(proc_t p, unsigned int code, int error)
++{
++	const char *name;
++	struct sweet_sc_proc *sp;
++
++	if (sweet_sc_err_total >= 1000 || (name = sweet_sc_named(p)) == NULL) {
++		return;
++	}
++	sp = sweet_sc_slot(proc_pid(p));
++	if (sp == NULL || sp->errs >= 250) {
++		return;
++	}
++	sp->errs++;
++	sweet_sc_err_total++;
++	printf("SCE %s[%d] %u err=%d\n", name, proc_pid(p), code, error);
++}
++
++void
++sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
++    unsigned long long a1, unsigned long long a2)
++{
++	const char *name;
++	struct sweet_sc_proc *sp;
++	int i, pid;
++
++	if (sweet_sc_total >= 2000) {
++		return;
++	}
++	name = sweet_sc_named(p);
++	if (name == NULL) {
++		return;
++	}
++	pid = proc_pid(p);
++	sp = sweet_sc_slot(pid);
++	if (sp == NULL) {
++		return;
+ 	}
++	i = (int)(sp - sweet_sc_procs);
+ 	if (sweet_sc_procs[i].lines > 700) {
+ 		return;
+ 	}
