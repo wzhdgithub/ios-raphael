@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
-index 7eae76c..83c55ea 100644
+index 7eae76c..66a3a18 100644
 --- a/bsd/dev/sweet_sample.c
 +++ b/bsd/dev/sweet_sample.c
-@@ -109,6 +109,24 @@ sweet_sc_init(void)
+@@ -109,6 +109,28 @@ sweet_sc_init(void)
  	}
  }
  
@@ -17,9 +17,13 @@ index 7eae76c..83c55ea 100644
 +static void
 +sweet_sc_path(unsigned long long uaddr, char *out, size_t len)
 +{
++	vm_size_t done;
++
 +	out[0] = 0;
-+	/* bsd/libkern/libkern.h: int copyinstr(const user_addr_t, void *, size_t, size_t *) */
-+	if (uaddr == 0 || copyinstr((user_addr_t)uaddr, out, len, NULL) != 0) {
++	/* bsd/libkern/libkern.h: int copyinstr(const user_addr_t, void *, size_t, size_t *).
++	 * osfmk/arm64/copyio.c starts with *lencopied = 0 without checking it, so the
++	 * fourth argument must be a real pointer (t102: NULL panicked the kernel). */
++	if (uaddr == 0 || copyinstr((user_addr_t)uaddr, out, len, &done) != 0) {
 +		strlcpy(out, "(unreadable)", len);
 +	}
 +}
@@ -27,7 +31,7 @@ index 7eae76c..83c55ea 100644
  void
  sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
      unsigned long long a1, unsigned long long a2)
-@@ -159,6 +177,30 @@ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+@@ -159,6 +181,30 @@ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
  		return;
  	}
  	sweet_sc_total++;
@@ -60,10 +64,10 @@ index 7eae76c..83c55ea 100644
  
 diff --git a/edit_0175.py b/edit_0175.py
 new file mode 100644
-index 0000000..3443f98
+index 0000000..77f110b
 --- /dev/null
 +++ b/edit_0175.py
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,76 @@
 +"""Author patch 0175: print the path argument of file-naming system calls."""
 +import sys
 +
@@ -78,9 +82,13 @@ index 0000000..3443f98
 +static void
 +sweet_sc_path(unsigned long long uaddr, char *out, size_t len)
 +{
++	vm_size_t done;
++
 +	out[0] = 0;
-+	/* bsd/libkern/libkern.h: int copyinstr(const user_addr_t, void *, size_t, size_t *) */
-+	if (uaddr == 0 || copyinstr((user_addr_t)uaddr, out, len, NULL) != 0) {
++	/* bsd/libkern/libkern.h: int copyinstr(const user_addr_t, void *, size_t, size_t *).
++	 * osfmk/arm64/copyio.c starts with *lencopied = 0 without checking it, so the
++	 * fourth argument must be a real pointer (t102: NULL panicked the kernel). */
++	if (uaddr == 0 || copyinstr((user_addr_t)uaddr, out, len, &done) != 0) {
 +		strlcpy(out, "(unreadable)", len);
 +	}
 +}
