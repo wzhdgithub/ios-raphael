@@ -10,6 +10,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <IOSurface/IOSurfaceRef.h>
+#include <ImageIO/ImageIO.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -72,7 +73,7 @@ look(const char *what, IOSurfaceRef surface, int side)
 static void
 show_file(const char *path)
 {
-	unsigned char head[8];
+	unsigned char head[8] = {0};
 	struct stat st;
 	size_t got = 0;
 	FILE *f;
@@ -87,8 +88,8 @@ show_file(const char *path)
 		got = fread(head, 1, sizeof(head), f);
 		fclose(f);
 	}
-	printf("%lld bytes, %s first %zu:%s%02x %02x %02x %02x %02x %02x %02x %02x\n", (long long)st.st_size,
-	    f == NULL ? "cannot open," : "", got, head[0], head[1], head[2], head[3], head[4], head[5],
+	printf("%lld bytes, %sfirst %zu: %02x %02x %02x %02x %02x %02x %02x %02x\n", (long long)st.st_size,
+	    f == NULL ? "cannot open, " : "", got, head[0], head[1], head[2], head[3], head[4], head[5],
 	    head[6], head[7]);
 }
 

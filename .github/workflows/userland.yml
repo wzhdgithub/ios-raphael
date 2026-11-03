@@ -100,7 +100,7 @@ jobs:
       # into a surface of the icon shape (the 180 x 180 no-format ones backboardd makes).
       - name: build icon_probe
         run: |
-          xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot "$THEOS/sdks/iPhoneOS16.5.sdk" -O1             -framework CoreFoundation -framework CoreGraphics -framework IOSurface -o icon_probe userland/src/icon_probe.c
+          xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot "$THEOS/sdks/iPhoneOS16.5.sdk" -O1             -framework CoreFoundation -framework CoreGraphics -framework IOSurface -framework ImageIO -o icon_probe userland/src/icon_probe.c
           file icon_probe; ls -la icon_probe
 
       # An exec'd binary without a code signature never gets CS_SIGNED, so XNU's
