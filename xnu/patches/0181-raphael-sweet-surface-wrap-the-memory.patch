@@ -1,0 +1,361 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index bd9afa0..0d76ef5 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -24,6 +24,10 @@
+  *
+  * Values, notifications, accelerators and shared events are accepted and
+  * ignored (logged once per selector).
++ *
++ * A surface made around memory the caller already has (selector 6, and a
++ * create whose properties name IOSurfaceAddress) keeps that memory as its
++ * pixels; every other surface gets a wired kernel buffer of its own.
+  */
+ #include "SweetSurface.h"
+ 
+@@ -34,10 +38,12 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/system.h>
++#include <kern/thread.h>
+ #include <libkern/c++/OSArray.h>
+ #include <libkern/c++/OSDictionary.h>
+ #include <libkern/c++/OSNumber.h>
+ #include <libkern/c++/OSUnserialize.h>
++#include <pexpert/pexpert.h>
+ #include <sys/proc.h>
+ 
+ enum {
+@@ -85,6 +91,8 @@ static uint32_t      sweet_surface_goes_logged;
+ static uint32_t      sweet_surface_creates_logged;
+ static uint64_t      sweet_surface_wired;       /* bytes of buffer surfaces */
+ #define SWEET_SURFACE_WIRED_MAX         (1536ull << 20)
++/* boot-arg sweet_wrap=0: a surface around the caller's own memory refused, as it was before (for comparing) */
++static TUNABLE(uint32_t, sweet_surface_wrap, "sweet_wrap", 1);
+ 
+ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
+ 
+@@ -372,7 +380,14 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	if (alloc < end) {
+ 		alloc = end;
+ 	}
+-	alloc = round_page(alloc);
++	/*
++	 * A surface of our own gets a page-rounded buffer. One made around the caller's memory is
++	 * exactly as big as that memory and not a byte more: rounding a 129,600-byte icon up to
++	 * 131,072 would reach past the buffer it names, and the kernel could not hold it.
++	 */
++	if (OSDynamicCast(OSNumber, props->getObject("IOSurfaceAddress")) == NULL) {
++		alloc = round_page(alloc);
++	}
+ 	if (alloc == 0 || alloc > SWEET_SURFACE_MAX_ALLOC) {
+ 		return kIOReturnNoMemory;
+ 	}
+@@ -380,6 +395,83 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	return kIOReturnSuccess;
+ }
+ 
++/*
++ * SWEET 0181: what a surface's pixels are.
++ *
++ * A caller that names memory -- a create carrying IOSurfaceAddress, or selector 6 asking for a
++ * surface around an image it holds -- means the surface to BE that memory. HackiOS's MiniIOSurface
++ * calls it "a surface around a picture of the client's own" and says the window server's GLES
++ * renderer asks for one for every image it is to draw from: an icon, a glyph mask, a gradient.
++ * 0157 was written when that request first arrived and nobody knew what it was for, and refused it;
++ * and a create whose eighth key was an address took the geometry from the other seven and handed
++ * back a freshly zeroed buffer of our own. Either way the caller's picture stayed in its own memory
++ * while the surface pointing at it kept zeros -- which is exactly what 0177 sees from the kernel (a
++ * writer that locks for write, bumps the seed and changes nothing) and what glshow=180x180 sees as
++ * a black texture. Hold the memory, map it for the kernel, and make it s->memory: the mappings, the
++ * reads and 0172's cache flush then work on the picture itself. Memory that cannot be held falls
++ * back to the old buffer, so no surface is left worse off than it was.
++ */
++static uint32_t sweet_wrap_logged;
++
++static IOReturn
++sweet_surface_pixels(SweetSurface *s, OSDictionary *props)
++{
++	OSNumber *address = OSDynamicCast(OSNumber, props->getObject("IOSurfaceAddress"));
++	char name[32];
++
++	if (address != NULL && sweet_surface_wrap != 0 && address->unsigned64BitValue() != 0) {
++		uint64_t user = address->unsigned64BitValue();
++		IOMemoryDescriptor *held_mem = NULL;
++		IOReturn held = kIOReturnNoMemory;
++
++		/* held for writing if it can be, which a picture that is only shown need not be */
++		for (unsigned attempt = 0; attempt < 2 && held != kIOReturnSuccess; attempt++) {
++			OSSafeReleaseNULL(held_mem);
++			held_mem = IOMemoryDescriptor::withAddressRange(user, s->allocSize,
++			    attempt == 0 ? kIODirectionInOut : kIODirectionOut, current_task());
++			held = held_mem != NULL ? held_mem->prepare() : kIOReturnNoMemory;
++		}
++		if (held == kIOReturnSuccess) {
++			IOMemoryMap *map = held_mem->createMappingInTask(kernel_task, 0, kIOMapAnywhere);
++
++			if (map != NULL) {
++				s->memory = held_mem;
++				s->kernelMap = map;          /* kernelAddress() finds this and maps nothing itself */
++				s->mapCache = kIOMapDefaultCache;
++				if (sweet_wrap_logged++ < 24) {
++					proc_selfname(name, sizeof(name));
++					/* no id yet: the surface is published after its pixels are chosen */
++					IOLog("SWEET WRAP: %s takes %u bytes at %#llx for %ux%u as its own pixels\n",
++					    name, s->allocSize, (unsigned long long)user, s->width, s->height);
++				}
++				return kIOReturnSuccess;
++			}
++			held = kIOReturnVMError;
++		}
++		OSSafeReleaseNULL(held_mem);
++		if (sweet_wrap_logged++ < 24) {
++			proc_selfname(name, sizeof(name));
++			IOLog("SWEET WRAP: %s could not take %u bytes at %#llx (0x%x): our own buffer instead\n",
++			    name, s->allocSize, (unsigned long long)user, held);
++		}
++	}
++
++	IOBufferMemoryDescriptor *mem = NULL;
++	if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
++	    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
++		mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++		    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++	}
++	if (mem == NULL) {
++		OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
++		return kIOReturnNoMemory;
++	}
++	bzero(mem->getBytesNoCopy(), s->allocSize);
++	s->memory = mem;
++	s->mapCache = kIOMapDefaultCache;
++	return kIOReturnSuccess;
++}
++
+ /* Per-client mapping of one surface. */
+ class SweetSurfaceRef : public OSObject {
+ 	OSDeclareDefaultStructors(SweetSurfaceRef);
+@@ -442,6 +534,8 @@ class IOSurfaceRootUserClient : public IOUserClient {
+ 	IOReturn addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool *existing);
+ 	IOReturn returnSurface(SweetSurface *s, IOExternalMethodArguments *args);
+ 	IOReturn create(IOExternalMethodArguments *args);
++	IOReturn createFromProperties(OSDictionary *props, IOExternalMethodArguments *args);
++	IOReturn methodWrapClientImage(IOExternalMethodArguments *args);
+ 
+ public:
+ 	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
+@@ -840,7 +934,6 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 	const char *buf = (const char *)args->structureInput;
+ 	uint32_t len = args->structureInputSize;
+ 	char *copy = NULL;
+-	IOReturn ret;
+ 
+ 	if (args->structureInputDescriptor != NULL) {
+ 		len = (uint32_t)args->structureInputDescriptor->getLength();
+@@ -865,8 +958,16 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		IOLog("SWEET SURF: create: bad property dictionary (%u bytes)\n", len);
+ 		return kIOReturnBadArgument;
+ 	}
++	return createFromProperties(props, args);   /* takes the properties back */
++}
+ 
++/* One surface from a property dictionary: geometry, pixels, an id and the client's lock result. */
++IOReturn
++IOSurfaceRootUserClient::createFromProperties(OSDictionary *props, IOExternalMethodArguments *args)
++{
+ 	SweetSurface *s = sweet_surface_alloc();
++	IOReturn ret;
++
+ 	if (s == NULL) {
+ 		props->release();
+ 		return kIOReturnNoMemory;
+@@ -874,22 +975,9 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 	s->parentID = args->scalarInputCount > 0 ? (uint32_t)args->scalarInput[0] : 0;
+ 	ret = sweet_surface_layout(s, props);
+ 	if (ret == kIOReturnSuccess) {
+-		IOBufferMemoryDescriptor *mem = NULL;
+-		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+-		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
+-			mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+-			    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
+-		}
+-		if (mem == NULL) {
+-			OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
+-			ret = kIOReturnNoMemory;
+-		} else {
+-			bzero(mem->getBytesNoCopy(), s->allocSize);
+-			s->memory = mem;
+-			s->mapCache = kIOMapDefaultCache;
+-			if (!sweet_surface_publish(s)) {
+-				ret = kIOReturnNoResources;
+-			}
++		ret = sweet_surface_pixels(s, props);
++		if (ret == kIOReturnSuccess && !sweet_surface_publish(s)) {
++			ret = kIOReturnNoResources;
+ 		}
+ 	}
+ 	if (ret != kIOReturnSuccess || sweet_surface_creates_logged < 64) {
+@@ -911,6 +999,108 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 	return ret;
+ }
+ 
++/*
++ * SWEET 0181: selector 6, wrap a client image. The request is 32 bytes -- 0157 logged it coming
++ * from backboardd as "structure 32 in/2664 out", and 2664 is a create's lock result -- and it is
++ * answered as a create whose IOSurfaceAddress is the picture: address, then width, height, pixel
++ * format, bytes per element, bytes per row and size, four bytes each (HackiOS's MiniIOSurface,
++ * which has had this method since the start, documents the same layout). The surface's pixels are
++ * that memory, so the uploader reads what was drawn instead of the zeros our buffer held.
++ */
++IOReturn
++IOSurfaceRootUserClient::methodWrapClientImage(IOExternalMethodArguments *args)
++{
++	struct {
++		uint64_t address;
++		uint32_t width, height, format, bytesPerElement, bytesPerRow, size;
++	} request;
++	static const char *const keys[] = { "IOSurfaceWidth", "IOSurfaceHeight", "IOSurfacePixelFormat",
++		"IOSurfaceBytesPerElement", "IOSurfaceBytesPerRow", "IOSurfaceAllocSize" };
++	const void *buf = args->structureInput;
++	uint32_t len = args->structureInputSize;
++	char *copy = NULL;
++	uint32_t values[6];
++	OSDictionary *props;
++	OSNumber *address;
++	IOReturn ret = kIOReturnSuccess;
++
++	if (buf == NULL && args->structureInputDescriptor != NULL) {
++		len = (uint32_t)args->structureInputDescriptor->getLength();
++		if (len < sizeof(request) || len > SWEET_SURFACE_MAX_PROPS) {
++			return kIOReturnBadArgument;
++		}
++		copy = (char *)IOMallocData(len);
++		if (copy == NULL) {
++			return kIOReturnNoMemory;
++		}
++		args->structureInputDescriptor->readBytes(0, copy, len);
++		buf = copy;
++	}
++	if (buf == NULL || len < sizeof(request)) {
++		if (copy != NULL) {
++			IOFreeData(copy, len);
++		}
++		return kIOReturnBadArgument;
++	}
++	memcpy(&request, buf, sizeof(request));
++	if (copy != NULL) {
++		IOFreeData(copy, len);
++	}
++	if (request.address == 0 || request.size == 0 || request.width == 0 || request.height == 0) {
++		return kIOReturnBadArgument;
++	}
++	values[0] = request.width;
++	values[1] = request.height;
++	values[2] = request.format;
++	values[3] = request.bytesPerElement;
++	values[4] = request.bytesPerRow;
++	values[5] = request.size;
++	props = OSDictionary::withCapacity(8);
++	address = OSNumber::withNumber(request.address, 64);
++	if (props == NULL || address == NULL) {
++		OSSafeReleaseNULL(address);
++		OSSafeReleaseNULL(props);
++		return kIOReturnNoMemory;
++	}
++	props->setObject("IOSurfaceAddress", address);
++	OSSafeReleaseNULL(address);
++	for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]) && ret == kIOReturnSuccess; i++) {
++		OSNumber *n = OSNumber::withNumber(values[i], 32);
++
++		ret = n != NULL && props->setObject(keys[i], n) ? kIOReturnSuccess : kIOReturnNoMemory;
++		OSSafeReleaseNULL(n);
++	}
++	if (ret == kIOReturnSuccess) {
++		ret = createFromProperties(props, args);   /* takes the properties back */
++	} else {
++		props->release();
++	}
++	return ret;
++}
++
++/*
++ * A method this surface has not got, refused the way IOSurfaceRootUserClient refuses one -- with
++ * one line naming the selector and what it came with, so the next one can be looked up in the
++ * framework that sent it.
++ */
++static IOReturn
++sweet_surf_refuse(uint32_t selector, IOExternalMethodArguments *args)
++{
++	static uint64_t told;
++
++	if (selector < 64 && (told & (1ULL << selector)) == 0) {
++		char name[32];
++		proc_selfname(name, sizeof(name));
++		told |= 1ULL << selector;
++		IOLog("SWEET SURF: %s sel %u refused (%s): scalars %u in/%u out, structure %u in/%u out\n",
++		    name, selector, selector == kSweetSurfaceWrapClientImage ? "a client image" :
++		    selector == kSweetSurfaceWrapClientMemory ? "client memory" : "unknown",
++		    args->scalarInputCount, args->scalarOutputCount, args->structureInputSize,
++		    args->structureOutputSize);
++	}
++	return kIOReturnUnsupported;
++}
++
+ IOReturn
+ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
+@@ -929,6 +1119,9 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 	}
+ 	case kSweetSurfaceCreate:
+ 		return create(args);
++	case kSweetSurfaceWrapClientImage:
++		return sweet_surface_wrap != 0 ? methodWrapClientImage(args) :
++		    sweet_surf_refuse(selector, args);
+ 	case kSweetSurfaceLookup: {
+ 		SweetSurface *s = sweet_surface_copy((uint32_t)arg0);
+ 		IOReturn ret = kIOReturnNotFound;
+@@ -964,11 +1157,12 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 	}
+ 	/*
+ 	 * The ones that only carry a value, a matrix or a timestamp: taken and dropped, as
+-	 * they always were. Everything else is refused the way IOSurfaceRootUserClient
+-	 * refuses a method it has not got. A made-up success is worse than a refusal: the
+-	 * window server's GLES renderer asks for selector 6 (wrap a client image) right
+-	 * after it attaches the display's surface, then uses what it believes came back --
+-	 * zeros, a NULL surface -- and the process dies at 0x30.
++	 * they always were. Everything else is refused. A made-up success is worse than a
++	 * refusal: the window server's GLES renderer asks for selector 6 (wrap a client image)
++	 * right after it attaches the display's surface, then uses what it believes came back --
++	 * zeros, a NULL surface -- and the process dies at 0x30. 0181 answers the ask with the
++	 * surface around the caller's memory it asked for, so selector 6 only reaches the
++	 * refusal below with sweet_wrap=0.
+ 	 */
+ 	case kSweetSurfaceSetYCbCrMatrix:
+ 	case kSweetSurfaceSetValue:
+@@ -985,24 +1179,8 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 			bzero(args->structureOutput, args->structureOutputSize);
+ 		}
+ 		return kIOReturnSuccess;
+-	default: {
+-		/*
+-		 * One line for each selector that is refused, with what it came with, so that
+-		 * the next one can be looked up in the framework that sent it.
+-		 */
+-		static uint64_t told;
+-		if (selector < 64 && (told & (1ULL << selector)) == 0) {
+-			char name[32];
+-			proc_selfname(name, sizeof(name));
+-			told |= 1ULL << selector;
+-			IOLog("SWEET SURF: %s sel %u refused (%s): scalars %u in/%u out, structure %u in/%u out\n",
+-			    name, selector, selector == kSweetSurfaceWrapClientImage ? "a client image" :
+-			    selector == kSweetSurfaceWrapClientMemory ? "client memory" : "unknown",
+-			    args->scalarInputCount, args->scalarOutputCount, args->structureInputSize,
+-			    args->structureOutputSize);
+-		}
+-		return kIOReturnUnsupported;
+-	}
++	default:
++		return sweet_surf_refuse(selector, args);
+ 	}
+ }
+ 
