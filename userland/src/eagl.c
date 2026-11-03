@@ -864,6 +864,26 @@ target_to_surface(struct eagl *e, struct image *image)
 			}
 		}
 		glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+		/* 0177 logs a write lock that leaves an icon surface empty; say whether that lock is this one. */
+		if (surface_probe && IOSurfaceGetPixelFormat(surface) == 0) {
+			static unsigned written_said;
+			size_t room = IOSurfaceGetAllocSize(surface);
+			size_t n = row * (size_t)image->height, nz = 0;
+			GLint error = glGetError();
+
+			if (n > room) {
+				n = room;
+			}
+			for (size_t at = 0; base != NULL && at < n; at++) {
+				nz += base[at] != 0;
+			}
+			if (written_said++ < 24) {
+				say("hakios-gl: the library writes texture %u back into surface %u under a write lock"
+				    " (no pixel format, %d x %d, %zu a row): non-zero %zu of %zu, GL error %#x\n",
+				    image->texture, IOSurfaceGetID(surface), image->width, image->height, row, nz, n,
+				    (unsigned)error);
+			}
+		}
 		IOSurfaceUnlock(surface, 0, NULL);
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, e->framebuffer);
