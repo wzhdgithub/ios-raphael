@@ -1,0 +1,89 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 249719c..bd9afa0 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -756,46 +756,68 @@ sweet_watch_say(const char *what, SweetSurface *s, bool forwrite)
+ }
+ 
+ /*
+- * SWEET 0179: which property does this port throw away?
++ * SWEET 0179/0180: which property does this port throw away?
+  *
+  * Every surface that shows a picture arrives with eight properties and an ordinary one with
+- * seven (the "keys" field of the SWEET SURF line, in every round from t103 to t112b), and
+- * sweet_surface_layout reads only the geometry: the eighth is never looked at. HackiOS describes
+- * these surfaces as memory CoreAnimation made a surface around, while create() here always
+- * allocates its own zeroed buffer. If that extra key is the request to use the caller's memory,
+- * then CoreAnimation draws into its own buffer, the surface keeps the fresh zeros, and that is
+- * exactly what 0177 sees: a writer that locks for write, bumps the seed and changes nothing. Say
+- * what the client sent, for the icon shapes only, escaped so nothing in it can garble the log --
+- * the key names are plain text in both the XML and the binary form, so the host can read them
+- * off the dump.
++ * seven (the "keys" field of the SWEET SURF line, in every round from t103 to t113). 0179 asked
++ * for them by name but its filter required the pixel-format key to be *absent*, and t113 printed
++ * nothing at all: CoreAnimation sends the key with value 0. Ask by size instead, name the keys
++ * the dictionary holds, and dump the bytes the client sent -- the key names are plain text in
++ * both the XML and the binary form, so the host can read whatever the eighth one is even if it
++ * is not in the list below. The list comes from the shared cache, from the strings that sit next
++ * to the keys sweet_surface_layout() does read: IOSurfaceIsGlobal, IOSurfaceMemoryPool,
++ * IOSurfaceMemoryPoolInfo, IOSurfaceMemoryPoolSize, IOSurfaceID, IOSurfaceMapCacheAttribute,
++ * IOSurfaceUseReserve. A memory pool is how a surface is made inside memory the caller already
++ * owns, which is what HackiOS means by a surface made around a picture -- and it would give
++ * exactly the t109/t112b/t113 picture: CoreAnimation draws into the pool, this kext hands back
++ * the fresh zeroed buffer it allocated for itself, and the writer still bumps the seed.
+  */
+ #define SWEET_PROPS_LINE      240
+-#define SWEET_PROPS_MAX_LINES  60
++#define SWEET_PROPS_MAX_LINES  90
+ 
+ static int sweet_props_lines;
+ 
++static const char *const sweet_props_known[] = {
++	"IOSurfaceWidth", "IOSurfaceHeight", "IOSurfaceBytesPerElement", "IOSurfaceBytesPerRow",
++	"IOSurfaceElementWidth", "IOSurfaceElementHeight", "IOSurfaceAllocSize", "IOSurfaceOffset",
++	"IOSurfaceCacheMode", "IOSurfacePixelFormat", "IOSurfacePlaneInfo", "IOSurfaceIsGlobal",
++	"IOSurfaceMemoryPool", "IOSurfaceMemoryPoolInfo", "IOSurfaceMemoryPoolSize", "IOSurfaceID",
++	"IOSurfaceMapCacheAttribute", "IOSurfaceUseReserve", "IOSurfaceProperties", "IOSurfaceLabel",
++};
++
+ static bool
+ sweet_props_shape(OSDictionary *props)
+ {
+ 	uint32_t width = sweet_dict_u32(props, "IOSurfaceWidth", 0);
+ 	uint32_t height = sweet_dict_u32(props, "IOSurfaceHeight", 0);
+ 
+-	return OSDynamicCast(OSNumber, props->getObject("IOSurfacePixelFormat")) == NULL &&
+-	    sweet_dict_u32(props, "IOSurfaceBytesPerElement", 4) == 4 &&
+-	    OSDynamicCast(OSArray, props->getObject("IOSurfacePlaneInfo")) == NULL &&
+-	    width >= 16 && width <= 260 && height >= 16 && height <= 260;
++	return width >= 16 && width <= 260 && height >= 16 && height <= 260;
+ }
+ 
+ static void
+ sweet_props_say(OSDictionary *props, const char *buf, uint32_t len)
+ {
+ 	char line[SWEET_PROPS_LINE + 1];
+-	uint32_t at, part;
++	char names[220];
++	uint32_t at, part, used;
+ 
+ 	if (props == NULL || buf == NULL || len == 0 || !sweet_props_shape(props) ||
+ 	    sweet_props_lines >= SWEET_PROPS_MAX_LINES) {
+ 		return;
+ 	}
++	names[0] = '\0';
++	used = 0;
++	for (at = 0; used < sizeof(names) - 40 &&
++	    at < sizeof(sweet_props_known) / sizeof(sweet_props_known[0]); at++) {
++		if (props->getObject(sweet_props_known[at]) != NULL) {
++			used += (uint32_t)snprintf(names + used, sizeof(names) - used, " %s",
++			    sweet_props_known[at]);
++		}
++	}
++	sweet_props_lines++;
++	IOLog("SWEET PROPS: %ux%u %u keys in %u bytes:%s\n",
++	    sweet_dict_u32(props, "IOSurfaceWidth", 0), sweet_dict_u32(props, "IOSurfaceHeight", 0),
++	    props->getCount(), len, names);
+ 	for (at = 0, part = 0; at < len && sweet_props_lines < SWEET_PROPS_MAX_LINES;
+ 	    at += SWEET_PROPS_LINE, part++) {
+ 		uint32_t n = len - at < SWEET_PROPS_LINE ? len - at : SWEET_PROPS_LINE;
