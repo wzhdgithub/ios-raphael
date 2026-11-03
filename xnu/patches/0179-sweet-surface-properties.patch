@@ -1,0 +1,76 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 1edcb81..249719c 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -755,6 +755,63 @@ sweet_watch_say(const char *what, SweetSurface *s, bool forwrite)
+ 	    (unsigned long)nz, (unsigned long)n);
+ }
+ 
++/*
++ * SWEET 0179: which property does this port throw away?
++ *
++ * Every surface that shows a picture arrives with eight properties and an ordinary one with
++ * seven (the "keys" field of the SWEET SURF line, in every round from t103 to t112b), and
++ * sweet_surface_layout reads only the geometry: the eighth is never looked at. HackiOS describes
++ * these surfaces as memory CoreAnimation made a surface around, while create() here always
++ * allocates its own zeroed buffer. If that extra key is the request to use the caller's memory,
++ * then CoreAnimation draws into its own buffer, the surface keeps the fresh zeros, and that is
++ * exactly what 0177 sees: a writer that locks for write, bumps the seed and changes nothing. Say
++ * what the client sent, for the icon shapes only, escaped so nothing in it can garble the log --
++ * the key names are plain text in both the XML and the binary form, so the host can read them
++ * off the dump.
++ */
++#define SWEET_PROPS_LINE      240
++#define SWEET_PROPS_MAX_LINES  60
++
++static int sweet_props_lines;
++
++static bool
++sweet_props_shape(OSDictionary *props)
++{
++	uint32_t width = sweet_dict_u32(props, "IOSurfaceWidth", 0);
++	uint32_t height = sweet_dict_u32(props, "IOSurfaceHeight", 0);
++
++	return OSDynamicCast(OSNumber, props->getObject("IOSurfacePixelFormat")) == NULL &&
++	    sweet_dict_u32(props, "IOSurfaceBytesPerElement", 4) == 4 &&
++	    OSDynamicCast(OSArray, props->getObject("IOSurfacePlaneInfo")) == NULL &&
++	    width >= 16 && width <= 260 && height >= 16 && height <= 260;
++}
++
++static void
++sweet_props_say(OSDictionary *props, const char *buf, uint32_t len)
++{
++	char line[SWEET_PROPS_LINE + 1];
++	uint32_t at, part;
++
++	if (props == NULL || buf == NULL || len == 0 || !sweet_props_shape(props) ||
++	    sweet_props_lines >= SWEET_PROPS_MAX_LINES) {
++		return;
++	}
++	for (at = 0, part = 0; at < len && sweet_props_lines < SWEET_PROPS_MAX_LINES;
++	    at += SWEET_PROPS_LINE, part++) {
++		uint32_t n = len - at < SWEET_PROPS_LINE ? len - at : SWEET_PROPS_LINE;
++
++		for (uint32_t i = 0; i < n; i++) {
++			unsigned char c = (unsigned char) buf[at + i];
++			line[i] = (c >= 0x20 && c < 0x7f) ? (char) c : '.';
++		}
++		line[n] = '\0';
++		sweet_props_lines++;
++		IOLog("SWEET PROPS: %ux%u part %u of %u: %s\n",
++		    sweet_dict_u32(props, "IOSurfaceWidth", 0), sweet_dict_u32(props, "IOSurfaceHeight", 0),
++		    part, (len + SWEET_PROPS_LINE - 1) / SWEET_PROPS_LINE, line);
++	}
++}
++
+ IOReturn
+ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ {
+@@ -776,6 +833,7 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		buf = copy;
+ 	}
+ 	OSObject *obj = (buf != NULL && len > 0) ? OSUnserializeXML(buf, len) : NULL;
++	sweet_props_say(OSDynamicCast(OSDictionary, obj), buf, len);
+ 	if (copy != NULL) {
+ 		IOFreeData(copy, len);
+ 	}
