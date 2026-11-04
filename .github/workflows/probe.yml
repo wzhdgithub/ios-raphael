@@ -1,0 +1,35 @@
+name: probe
+
+# Which macOS runner labels actually get a machine tonight. macos-15 has been queueing for
+# 1 h 40 min and cancelling 0-step, so the question is whether another label has capacity --
+# a job that only asks the machine who it is answers it in half a minute and cannot break a build.
+
+on:
+  push:
+    paths:
+      - ".github/workflows/probe.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: probe-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  label:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: who am I
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version || true
+          ls /Applications | grep -i xcode || true
+          sysctl -n machdep.cpu.brand_string || true
+      - name: can this machine build our dylib
+        run: |
+          xcrun --sdk iphoneos --show-sdk-path 2>&1 || echo "no iPhoneOS SDK from xcrun"
