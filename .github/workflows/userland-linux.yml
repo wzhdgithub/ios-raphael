@@ -67,11 +67,13 @@ jobs:
             userland/mesa/exported-gl.txt userland/src/eagl.c > obj/eagl_gen.h
           wc -l obj/eagl_gen.h
           printf 'int hakios_osmesa_stub;\n' > stub.c
-          clang -target arm64-apple-ios16.5 -isysroot "$SDK" -dynamiclib \
-            -fuse-ld=/usr/local/bin/ld64.lld \
+          # Ubuntu's clang driver does not fill in the image ld64.lld is making, so arch and
+          # platform go through explicitly (the macOS xnu-clang wrapper does this for us there).
+          LD='-fuse-ld=/usr/local/bin/ld64.lld -Wl,-arch,arm64 -Wl,-platform_version,ios,16.5,16.5'
+          clang -target arm64-apple-ios16.5 -isysroot "$SDK" -dynamiclib $LD \
             -install_name /usr/lib/libOSMesa.8.dylib -o libOSMesa.8.dylib stub.c
-          if ! clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -v \
-              -fuse-ld=/usr/local/bin/ld64.lld -Wl,-adhoc_codesign \n              -Wl,-arch,arm64 -Wl,-platform_version,ios,16.5,16.5 \
+          if ! clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -v $LD \
+              -Wl,-adhoc_codesign \
               -install_name /redwood/lib/libhakios.gl.dylib -Iobj \
               -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
               libOSMesa.8.dylib -o libhakios.gl.dylib \
