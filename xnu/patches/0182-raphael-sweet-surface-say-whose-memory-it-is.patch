@@ -1,0 +1,205 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 0d76ef5..1996698 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -251,6 +251,7 @@ sweet_surface_alloc(void)
+ 		return NULL;
+ 	}
+ 	bzero(s->state->getBytesNoCopy(), page_size);
++	s->clientAddress = 0;                 /* until a caller names memory of its own (0181) */
+ 	return s;
+ }
+ 
+@@ -411,7 +412,8 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+  * reads and 0172's cache flush then work on the picture itself. Memory that cannot be held falls
+  * back to the old buffer, so no surface is left worse off than it was.
+  */
+-static uint32_t sweet_wrap_logged;
++static uint32_t sweet_wrap_took;            /* surfaces that took the caller's memory */
++static uint32_t sweet_wrap_fell;            /* and those that could not, and got our buffer */
+ 
+ static IOReturn
+ sweet_surface_pixels(SweetSurface *s, OSDictionary *props)
+@@ -422,6 +424,7 @@ sweet_surface_pixels(SweetSurface *s, OSDictionary *props)
+ 	if (address != NULL && sweet_surface_wrap != 0 && address->unsigned64BitValue() != 0) {
+ 		uint64_t user = address->unsigned64BitValue();
+ 		IOMemoryDescriptor *held_mem = NULL;
++		const char *where = "descriptor";
+ 		IOReturn held = kIOReturnNoMemory;
+ 
+ 		/* held for writing if it can be, which a picture that is only shown need not be */
+@@ -429,16 +432,19 @@ sweet_surface_pixels(SweetSurface *s, OSDictionary *props)
+ 			OSSafeReleaseNULL(held_mem);
+ 			held_mem = IOMemoryDescriptor::withAddressRange(user, s->allocSize,
+ 			    attempt == 0 ? kIODirectionInOut : kIODirectionOut, current_task());
++			where = "prepare";
+ 			held = held_mem != NULL ? held_mem->prepare() : kIOReturnNoMemory;
+ 		}
+ 		if (held == kIOReturnSuccess) {
++			where = "map";
+ 			IOMemoryMap *map = held_mem->createMappingInTask(kernel_task, 0, kIOMapAnywhere);
+ 
+ 			if (map != NULL) {
+ 				s->memory = held_mem;
+ 				s->kernelMap = map;          /* kernelAddress() finds this and maps nothing itself */
++				s->clientAddress = user;
+ 				s->mapCache = kIOMapDefaultCache;
+-				if (sweet_wrap_logged++ < 24) {
++				if (sweet_wrap_took++ < 60) {
+ 					proc_selfname(name, sizeof(name));
+ 					/* no id yet: the surface is published after its pixels are chosen */
+ 					IOLog("SWEET WRAP: %s takes %u bytes at %#llx for %ux%u as its own pixels\n",
+@@ -449,10 +455,14 @@ sweet_surface_pixels(SweetSurface *s, OSDictionary *props)
+ 			held = kIOReturnVMError;
+ 		}
+ 		OSSafeReleaseNULL(held_mem);
+-		if (sweet_wrap_logged++ < 24) {
++		if (sweet_wrap_fell++ < 60) {
+ 			proc_selfname(name, sizeof(name));
+-			IOLog("SWEET WRAP: %s could not take %u bytes at %#llx (0x%x): our own buffer instead\n",
+-			    name, s->allocSize, (unsigned long long)user, held);
++			/* 0182: which of the three steps said no, since a fall back is the whole story of a
++			 * shape that stays empty -- prepare means the range is not the caller's to give,
++			 * map means the kernel has no view of it, descriptor means the size or address was
++			 * refused before either was tried. */
++			IOLog("SWEET WRAP: %s could not take %u bytes at %#llx for %ux%u (%s 0x%x): our own buffer instead\n",
++			    name, s->allocSize, (unsigned long long)user, s->width, s->height, where, held);
+ 		}
+ 	}
+ 
+@@ -778,14 +788,16 @@ IOSurfaceRootUserClient::returnSurface(SweetSurface *s, IOExternalMethodArgument
+  * as all zero as it uploads them as textures. Patch 0172 already flushes the cache at lock time,
+  * so "the cache is lying" is a weak answer: read the same memory here, in the kernel, where no
+  * process's mapping can hide anything, and say who locked the surface, for reading or writing,
+- * what its seed is, and how many bytes of it are not zero. At most 24 surfaces are watched (the
+- * icon shapes: no pixel format, four bytes a pixel, no planes, 16 to 260 a side) and at most 240
++ * what its seed is, and how many bytes of it are not zero. At most 40 surfaces are watched (the
++ * icon shapes: no pixel format, four bytes a pixel, no planes, 16 to 260 a side) and at most 400
+  * lines are written, because a home screen locks its surfaces every frame.
+  */
+-#define SWEET_WATCH_MAX  24
++#define SWEET_WATCH_MAX  40
+ static uint32_t sweet_watch_ids[SWEET_WATCH_MAX];
++static bool     sweet_watch_big[SWEET_WATCH_MAX];
+ static int sweet_watch_n;
+ static int sweet_watch_logged;
++static int sweet_big_logged;
+ 
+ static bool
+ sweet_watch_shape(SweetSurface *s)
+@@ -794,10 +806,28 @@ sweet_watch_shape(SweetSurface *s)
+ 	    s->width >= 16 && s->width <= 260 && s->height >= 16 && s->height <= 260;
+ }
+ 
++/*
++ * 0182: the wallpaper is the same question in a bigger box -- does anybody write the picture into
++ * the memory the caller named? Only its write-unlocks are reported: a fullscreen surface is locked
++ * for reading every frame, and reading tells nothing.
++ */
++static bool
++sweet_big_shape(SweetSurface *s)
++{
++	return s->planeCount == 0 && s->bytesPerElement <= 8 && s->width >= 512 && s->height >= 512 &&
++	    s->width <= 4096 && s->height <= 4096;
++}
++
+ static void
+ sweet_watch_remember(SweetSurface *s)
+ {
+-	if (!sweet_watch_shape(s)) {
++	bool big;
++
++	if (sweet_watch_shape(s)) {
++		big = false;
++	} else if (sweet_big_shape(s)) {
++		big = true;
++	} else {
+ 		return;
+ 	}
+ 	for (int i = 0; i < sweet_watch_n; i++) {
+@@ -806,33 +836,38 @@ sweet_watch_remember(SweetSurface *s)
+ 		}
+ 	}
+ 	if (sweet_watch_n < SWEET_WATCH_MAX) {
+-		sweet_watch_ids[sweet_watch_n++] = s->id;
+-		IOLog("SWEET WATCH: id %u (%ux%u) is one of the shapes that shows pictures\n", s->id,
+-		    s->width, s->height);
++		sweet_watch_ids[sweet_watch_n] = s->id;
++		sweet_watch_big[sweet_watch_n] = big;
++		sweet_watch_n++;
++		IOLog("SWEET WATCH: id %u (%ux%u) is one of the shapes that shows pictures%s\n", s->id,
++		    s->width, s->height, big ? ", as big as the panel" : "");
+ 	}
+ }
+ 
+-static bool
+-sweet_watch_wants(uint32_t id)
++static int
++sweet_watch_slot(uint32_t id)
+ {
+ 	for (int i = 0; i < sweet_watch_n; i++) {
+ 		if (sweet_watch_ids[i] == id) {
+-			return true;
++			return i;
+ 		}
+ 	}
+-	return false;
++	return -1;
+ }
+ 
+ static void
+-sweet_watch_say(const char *what, SweetSurface *s, bool forwrite)
+-{
++sweet_watch_say(const char *what, SweetSurface *s, bool forwrite){
+ 	char name[32];
++	char where[32];
++	int slot = sweet_watch_slot(s->id);
++	bool big = slot >= 0 && sweet_watch_big[slot];
+ 	uintptr_t base = s->kernelAddress();
+ 	vm_size_t n = s->offset + (vm_size_t)s->bytesPerRow * (vm_size_t)s->height;
+ 	const unsigned char *pixels;
+ 	size_t nz = 0;
+ 
+-	if (!sweet_watch_wants(s->id) || base == 0 || sweet_watch_logged >= 240) {
++	if (slot < 0 || base == 0 ||
++	    (big ? (!forwrite || sweet_big_logged >= 40) : sweet_watch_logged >= 400)) {
+ 		return;
+ 	}
+ 	if (n > (vm_size_t)s->allocSize) {
+@@ -842,10 +877,21 @@ sweet_watch_say(const char *what, SweetSurface *s, bool forwrite)
+ 	for (vm_size_t at = 0; at < n; at++) {
+ 		nz += pixels[at] != 0;
+ 	}
+-	sweet_watch_logged++;
++	if (big) {
++		sweet_big_logged++;
++	} else {
++		sweet_watch_logged++;
++	}
+ 	proc_selfname(name, sizeof(name));
+-	IOLog("SWEET WATCH: %s %s id %u %ux%u seed %u%s: non-zero %lu of %lu\n", name, what, s->id,
+-	    s->width, s->height, *sweet_surface_seed(s), forwrite ? " for write" : "",
++	/* 0182: say whose memory this is, since "empty" means two different things -- ours and never
++	 * written, or the caller's own and nobody drew into it. */
++	if (s->clientAddress != 0) {
++		snprintf(where, sizeof(where), " around %#llx", (unsigned long long)s->clientAddress);
++	} else {
++		where[0] = '\0';
++	}
++	IOLog("SWEET WATCH: %s %s id %u %ux%u seed %u%s%s: non-zero %lu of %lu\n", name, what, s->id,
++	    s->width, s->height, *sweet_surface_seed(s), forwrite ? " for write" : "", where,
+ 	    (unsigned long)nz, (unsigned long)n);
+ }
+ 
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index 506270c..e823431 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -37,6 +37,7 @@ public:
+ 	struct sweet_surface_plane planes[SWEET_SURFACE_MAX_PLANES];
+ 
+ 	IOMemoryDescriptor       *memory;       /* pixels (buffer or physical) */
++	uint64_t                   clientAddress;/* 0182: the address a caller named (0 = our buffer) */
+ 	IOOptionBits              mapCache;     /* cache mode for user mappings */
+ 	IOBufferMemoryDescriptor *state;        /* shared state page, read-only for users */
+ 	IOMemoryMap              *kernelMap;    /* lazily created for kernel copies */
