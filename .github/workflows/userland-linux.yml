@@ -40,13 +40,18 @@ jobs:
       - name: toolchain (clang 18, lld, ldid)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld libplist-dev libssl-dev libxml2-dev zlib1g-dev cmake git
+          sudo apt-get install -y -qq clang lld-18
           clang --version | head -1
-          ld64.lld --version | head -1 || lld --version | head -1
-          git clone -q --depth 1 https://github.com/ProcursusTeam/ldid.git
-          cmake -S ldid -B ldid/build -DCMAKE_BUILD_TYPE=Release > /dev/null
-          cmake --build ldid/build -j "$(nproc)" > /dev/null
-          ls -la ldid/build/ldid
+          for p in /usr/bin/ld64.lld-18 /usr/lib/llvm-18/bin/ld64.lld /usr/bin/ld64.lld; do
+            if [ -x "$p" ]; then sudo ln -sf "$p" /usr/local/bin/ld64.lld; break; fi
+          done
+          ld64.lld --version | head -1
+          # ldid: the prebuilt Linux build, not a build from source (its Makefile wants libplist-dev
+          # plus a working C++ toolchain and costs a minute for something that is one download).
+          sudo curl -fsSL -o /usr/local/bin/ldid \
+            https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64
+          sudo chmod +x /usr/local/bin/ldid
+          ldid -h 2>&1 | head -3 || true
 
       - name: SDK (iPhoneOS 16.5, github.com/theos/sdks)
         run: |
@@ -71,8 +76,8 @@ jobs:
             userland/src/eagl.c userland/src/gl_osmesa.c -undefined dynamic_lookup
           file libhakios.gl.dylib
           ls -la libhakios.gl.dylib
-          ldid/build/ldid -S libhakios.gl.dylib
-          ldid/build/ldid -h | head -2 || true
+          ldid -S libhakios.gl.dylib
+          grep -c 'wall where the wallpaper' <(strings libhakios.gl.dylib) || true
           echo "--- undefined symbols: $(nm -u libhakios.gl.dylib 2>/dev/null | wc -l)"
           echo "--- the wall: $(strings libhakios.gl.dylib | grep -c 'wall where the wallpaper')"
 
