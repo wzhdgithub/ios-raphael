@@ -33,3 +33,16 @@ jobs:
       - name: can this machine build our dylib
         run: |
           xcrun --sdk iphoneos --show-sdk-path 2>&1 || echo "no iPhoneOS SDK from xcrun"
+
+  linux:
+    # If this starts at once while every macos label sits in the queue, the macOS pool is not the
+    # problem -- the account's macOS allowance is, and waiting will not fix it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: who am I
+        run: |
+          uname -a
+          lsb_release -a 2>/dev/null || cat /etc/os-release
+          clang --version || true
+          which ld64.lld lld ldid python3 || true
