@@ -40,7 +40,7 @@ jobs:
       - name: toolchain (clang 18, lld, ldid)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld-18
+          sudo apt-get install -y -qq clang lld-18 llvm-18
           clang --version | head -1
           for p in /usr/bin/ld64.lld-18 /usr/lib/llvm-18/bin/ld64.lld /usr/bin/ld64.lld; do
             if [ -x "$p" ]; then sudo ln -sf "$p" /usr/local/bin/ld64.lld; break; fi
@@ -78,7 +78,7 @@ jobs:
           ls -la libhakios.gl.dylib
           ldid -S libhakios.gl.dylib
           grep -c 'wall where the wallpaper' <(strings libhakios.gl.dylib) || true
-          echo "--- undefined symbols: $(nm -u libhakios.gl.dylib 2>/dev/null | wc -l)"
+          llvm-nm-18 -u libhakios.gl.dylib 2>/dev/null | wc -l || true
           echo "--- the wall: $(strings libhakios.gl.dylib | grep -c 'wall where the wallpaper')"
 
       - uses: actions/upload-artifact@v4
