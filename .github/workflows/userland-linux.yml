@@ -1,0 +1,85 @@
+name: userland-linux
+
+# libhakios.gl.dylib without macOS.
+#
+# The macOS pool starves for hours at a time (2026-11-04: every macos label sat queued while an
+# ubuntu job finished in 45 s), and a shim change should not wait on that. Nothing in this file
+# needs Apple's tools as *hosts*: clang 18 on Linux targets arm64-apple-ios16.5, lld links a Mach-O
+# dylib against the SDK's .tbd stubs, and ldid writes the ad-hoc signature the phone expects.
+#
+# Mesa is not built here. The dylib depends on /usr/lib/libOSMesa.8.dylib, which the image already
+# carries from the macOS build, so a one-symbol stub with the same install name is all the linker
+# needs; the real library is found at load time.
+#
+# Inputs that Mesa would have produced are committed instead: userland/mesa/gl.xml (the Khronos
+# registry, for the prototypes) and userland/mesa/exported-gl.txt (the gl* names libOSMesa exports,
+# which decides what our table can forward to).
+
+on:
+  push:
+    paths:
+      - "userland/src/eagl.c"
+      - "userland/src/gl_osmesa.c"
+      - "userland/src/eagl_slots.txt"
+      - "userland/mkeagl.py"
+      - "userland/mesa/**"
+      - ".github/workflows/userland-linux.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: userland-linux-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  dylib:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: toolchain (clang 18, lld, ldid)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld libplist-dev libssl-dev libxml2-dev zlib1g-dev cmake git
+          clang --version | head -1
+          ld64.lld --version | head -1 || lld --version | head -1
+          git clone -q --depth 1 https://github.com/ProcursusTeam/ldid.git
+          cmake -S ldid -B ldid/build -DCMAKE_BUILD_TYPE=Release > /dev/null
+          cmake --build ldid/build -j "$(nproc)" > /dev/null
+          ls -la ldid/build/ldid
+
+      - name: SDK (iPhoneOS 16.5, github.com/theos/sdks)
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git sdks
+          git -C sdks sparse-checkout set iPhoneOS16.5.sdk
+          ls sdks/iPhoneOS16.5.sdk | head
+
+      - name: the table, then the dylib
+        run: |
+          SDK="$PWD/sdks/iPhoneOS16.5.sdk"
+          mkdir -p obj
+          python3 userland/mkeagl.py userland/src/eagl_slots.txt userland/mesa/gl.xml \
+            userland/mesa/exported-gl.txt userland/src/eagl.c > obj/eagl_gen.h
+          wc -l obj/eagl_gen.h
+          printf 'int hakios_osmesa_stub;\n' > stub.c
+          clang -target arm64-apple-ios16.5 -isysroot "$SDK" -dynamiclib \
+            -install_name /usr/lib/libOSMesa.8.dylib -o libOSMesa.8.dylib stub.c
+          clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -fuse-ld=lld \
+            -install_name /redwood/lib/libhakios.gl.dylib -Iobj \
+            -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
+            libOSMesa.8.dylib -o libhakios.gl.dylib \
+            userland/src/eagl.c userland/src/gl_osmesa.c -undefined dynamic_lookup
+          file libhakios.gl.dylib
+          ls -la libhakios.gl.dylib
+          ldid/build/ldid -S libhakios.gl.dylib
+          ldid/build/ldid -h | head -2 || true
+          echo "--- undefined symbols: $(nm -u libhakios.gl.dylib 2>/dev/null | wc -l)"
+          echo "--- the wall: $(strings libhakios.gl.dylib | grep -c 'wall where the wallpaper')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: userland-gl-linux
+          path: |
+            libhakios.gl.dylib
+            libOSMesa.8.dylib
+          if-no-files-found: error
