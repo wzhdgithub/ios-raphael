@@ -1,0 +1,309 @@
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index 528a421..c8a3a93 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -87,30 +87,125 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+  * per process and everything else 300, with 12000 in all. The split matters: with one shared
+  * budget of 700, SpringBoard's boot chatter (its own bundle, then its dylibs) used it all up
+  * before the desktop was ever composited, and "no icon file was opened" turned out to be the
+- * cap talking rather than the process.
++ * cap talking rather than the process. 0185 below changes who these lines are printed for and
++ * which of them count, so read it together with this one.
+  */
+ int sweet_sc_enabled;
+ 
+ static char sweet_sc_names[128];
+ static int sweet_sc_total;
+ 
++/*
++ * SWEET 0185: which paths, and from whom. 0178's budget moved the wall from 700 to 2500 lines a
++ * process and the wall is still reached -- t118's SpringBoard spent all 2500 of them on its own
++ * bundle, its dylibs and the notification bundles, and went quiet before the desktop ever asked
++ * for a picture; the wallpaper question ("does any process open a wallpaper file at all") is
++ * therefore still the cap talking, not a fact about the system. Enlarging the budget only moves
++ * the wall further, so filter instead: a call that carries a path is printed only when its path
++ * holds one of these words, read out of the path *before* the budget is charged, and -- the part
++ * that matters for a daemon nobody has named yet -- a matching path is printed for EVERY process,
++ * not only the ones in sweetsc. The words are built in, and
++ *
++ *     sweetsc_path=Icon,Poster,Wallpaper,.car,.png,.surface
++ *
++ * replaces them; sweetsc_path=- turns the filter off, which is 0178's behaviour.
++ */
++static char sweet_sc_words[8][24];
++static int sweet_sc_words_n;
++
++/* The daemons that own a picture: the lock screen poster, the wallpaper agent, the icon service,
++ * the wallpaper store. Names longer than MAXCOMLEN=16 are truncated the way p_comm truncates. */
++static const char sweet_sc_more_names[] =
++    ",PosterBoard,WallpaperCacheAg,iconservicesagen,wallpaperd";
++static const char sweet_sc_all_words[] =
++    "icon,poster,wallpaper,.car,.png,.heic,.jpg,.surface";
++
++/* A path is charged to the budget only if it holds one of the words, case-insensitively: p_comm
++ * and the frameworks' own spellings differ (WallpaperCacheAgent vs com.apple.wallpaper.agent). */
++static bool
++sweet_sc_want_path(const char *path)
++{
++	if (sweet_sc_words_n == 0) {
++		return true;
++	}
++	for (int w = 0; w < sweet_sc_words_n; w++) {
++		for (const char *t = path; *t; t++) {
++			const char *a = t;
++			const char *b = sweet_sc_words[w];
++			while (*b != 0) {
++				char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
++				if (ca != *b) {
++					break;
++				}
++				a++;
++				b++;
++			}
++			if (*b == 0) {
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++static void
++sweet_sc_set_words(const char *list)
++{
++	sweet_sc_words_n = 0;
++	for (const char *t = list; *t != 0 && sweet_sc_words_n < 8; ) {
++		const char *end = strchr(t, ',');
++		size_t n = end != NULL ? (size_t)(end - t) : strlen(t);
++
++		if (n > sizeof(sweet_sc_words[0]) - 1) {
++			n = sizeof(sweet_sc_words[0]) - 1;
++		}
++		for (size_t i = 0; i < n; i++) {
++			char c = t[i];
++			sweet_sc_words[sweet_sc_words_n][i] =
++			    (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
++		}
++		sweet_sc_words[sweet_sc_words_n][n] = 0;
++		if (n > 0) {
++			sweet_sc_words_n++;
++		}
++		if (end == NULL) {
++			break;
++		}
++		t = end + 1;
++	}
++}
++
+ struct sweet_sc_proc {
+ 	int pid;
+ 	int lines;                /* (calls that carry a path) */
+ 	int other;                /* (everything else, which is noise but interesting once) */
+ 	int errs;
++	int listed;               /* named in sweetsc, so it gets the big budget and may not be shut out */
++	int quiet;                /* its cap was reached, so it will print nothing more */
+ };
+-static struct sweet_sc_proc sweet_sc_procs[64];
++/* 0185 lets any process report a path we asked for, so more pids want a slot than the two or six
++ * this was sized for: the table grew, and a process we named is never turned away by noise. */
++#define SWEET_SC_MAX 256
++static struct sweet_sc_proc sweet_sc_procs[SWEET_SC_MAX];
+ 
+ void
+ sweet_sc_init(void)
+ {
+ 	char names[128];
++	char words[128];
+ 
+ 	if (PE_parse_boot_argn("sweetsc", names, sizeof(names)) && names[0] != '-') {
+ 		strlcpy(sweet_sc_names, names, sizeof(sweet_sc_names));
++		strlcat(sweet_sc_names, sweet_sc_more_names, sizeof(sweet_sc_names));
+ 		sweet_sc_enabled = 1;
+ 	}
++	if (PE_parse_boot_argn("sweetsc_path", words, sizeof(words))) {
++		if (words[0] != '-') {
++			sweet_sc_set_words(words);
++		}
++	} else {
++		sweet_sc_set_words(sweet_sc_all_words);
++	}
+ }
+ 
+ /*
+@@ -164,27 +259,57 @@ sweet_sc_named(proc_t p)
+ }
+ 
+ static struct sweet_sc_proc *
+-sweet_sc_slot(pid_t pid)
++sweet_sc_slot(pid_t pid, int listed)
+ {
+-	int i, slot;
++	int i, empty, quiet, small;
++	struct sweet_sc_proc *sp;
++	int said;
+ 
+-	slot = -1;
+-	for (i = 0; i < 64; i++) {
+-		if (sweet_sc_procs[i].pid == pid) {
+-			return &sweet_sc_procs[i];
++	empty = quiet = small = -1;
++	for (i = 0; i < SWEET_SC_MAX; i++) {
++		sp = &sweet_sc_procs[i];
++		if (sp->pid == pid) {
++			return sp;
++		}
++		if (sp->pid == 0) {
++			if (empty < 0) {
++				empty = i;
++			}
++			continue;
++		}
++		if (sp->listed) {
++			continue;
+ 		}
+-		if (sweet_sc_procs[i].pid == 0 && slot < 0) {
+-			slot = i;
++		said = sp->lines + sp->other;
++		if (sp->quiet && quiet < 0) {
++			quiet = i;
++		}
++		if (small < 0 || said < sweet_sc_procs[small].lines + sweet_sc_procs[small].other) {
++			small = i;
++		}
++	}
++	if (empty < 0) {
++		/* A table full of daemons that have already said everything they will say is a table
++		 * with room in it, and 0185 fills it that way for the first time: the process we named
++		 * in sweetsc is the one that must still be able to speak, so it takes a quiet slot, or
++		 * the unlisted one that has said least. */
++		if (quiet >= 0) {
++			empty = quiet;
++		} else if (listed && small >= 0) {
++			empty = small;
+ 		}
+ 	}
+-	if (slot < 0) {
++	if (empty < 0) {
+ 		return NULL;
+ 	}
+-	sweet_sc_procs[slot].pid = pid;
+-	sweet_sc_procs[slot].lines = 0;
+-	sweet_sc_procs[slot].other = 0;
+-	sweet_sc_procs[slot].errs = 0;
+-	return &sweet_sc_procs[slot];
++	sp = &sweet_sc_procs[empty];
++	sp->pid = pid;
++	sp->lines = 0;
++	sp->other = 0;
++	sp->errs = 0;
++	sp->listed = listed;
++	sp->quiet = 0;
++	return sp;
+ }
+ 
+ void
+@@ -196,7 +321,7 @@ sweet_syscall_error(proc_t p, unsigned int code, int error)
+ 	if (sweet_sc_err_total >= 1000 || (name = sweet_sc_named(p)) == NULL) {
+ 		return;
+ 	}
+-	sp = sweet_sc_slot(proc_pid(p));
++	sp = sweet_sc_slot(proc_pid(p), 1);
+ 	if (sp == NULL || sp->errs >= 250) {
+ 		return;
+ 	}
+@@ -211,33 +336,58 @@ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+ {
+ 	const char *name;
+ 	struct sweet_sc_proc *sp;
+-	int i, pid, path;
++	int i, pid, path, named, cap;
++	char text[128], text2[128];
+ 
++	path = code == 5 || code == 10 || code == 12 || code == 33 || code == 34 || code == 58 ||
++	    code == 136 || code == 138 || code == 128 || code == 220 || code == 240 ||
++	    code == 338 || code == 340 || code == 398 || code == 463;
+ 	if (sweet_sc_total >= 12000) {
+ 		return;
+ 	}
+ 	name = sweet_sc_named(p);
+-	if (name == NULL) {
++	named = name != NULL;
++	if (!named && !path) {
+ 		return;
+ 	}
++	if (path) {
++		/* SWEET 0185: read the path before anything is charged, so a budget spent on
++		 * pictures is a fact and not the cap talking, and so a picture path from a daemon
++		 * nobody thought to name -- PosterBoard, the wallpaper agent, whichever process
++		 * really owns the lock screen -- is printed anyway. The name list still gates the
++		 * numeric lines, which would be every syscall in the system otherwise. */
++		sweet_sc_path(code == 463 ? a1 : a0, text, sizeof(text));
++		if (code == 128) {
++			sweet_sc_path(a1, text2, sizeof(text2));
++			if (!sweet_sc_want_path(text) && !sweet_sc_want_path(text2)) {
++				return;
++			}
++		} else if (!sweet_sc_want_path(text)) {
++			return;
++		}
++		if (!named) {
++			name = p->p_comm;
++		}
++	}
+ 	pid = proc_pid(p);
+-	sp = sweet_sc_slot(pid);
++	sp = sweet_sc_slot(pid, named);
+ 	if (sp == NULL) {
+ 		return;
+ 	}
+ 	i = (int)(sp - sweet_sc_procs);
+-	path = code == 5 || code == 10 || code == 12 || code == 33 || code == 34 || code == 58 ||
+-	    code == 136 || code == 138 || code == 128 || code == 220 || code == 240 ||
+-	    code == 338 || code == 340 || code == 398 || code == 463;
+-	if (path ? sweet_sc_procs[i].lines > 2500 : sweet_sc_procs[i].other > 300) {
++	cap = path ? (named ? 2500 : 120) : 300;
++	if (path ? sweet_sc_procs[i].lines > cap : sweet_sc_procs[i].other > cap) {
+ 		return;
+ 	}
+ 	if (path) {
+-		if (sweet_sc_procs[i].lines++ == 2500) {
+-			printf("SC %s[%d] --- 2500 calls with a path, quiet from now on\n", name, pid);
++		if (sweet_sc_procs[i].lines++ == cap) {
++			sweet_sc_procs[i].quiet = 1;
++			printf("SC %s[%d] --- %d calls with a path we asked for, quiet from now on\n",
++			    name, pid, cap);
+ 			return;
+ 		}
+-	} else if (sweet_sc_procs[i].other++ == 300) {
++	} else if (sweet_sc_procs[i].other++ == cap) {
++		sweet_sc_procs[i].quiet = 1;
+ 		printf("SC %s[%d] --- 300 other calls, quiet from now on\n", name, pid);
+ 		return;
+ 	}
+@@ -245,23 +395,11 @@ sweet_syscall_trace(proc_t p, unsigned int code, unsigned long long a0,
+ 	switch (code) {
+ 	case 5: case 10: case 12: case 33: case 34: case 58: case 136: case 138:
+ 	case 220: case 240: case 338: case 340: case 398: case 463:
+-		{
+-			char path[128];
+-			unsigned long long upath = (code == 463) ? a1 : a0;
+-
+-			sweet_sc_path(upath, path, sizeof(path));
+-			printf("SC %s[%d] %u \"%s\" 0x%llx 0x%llx\n", name, pid, code, path,
+-			    (code == 463) ? a0 : a1, a2);
+-		}
++		printf("SC %s[%d] %u \"%s\" 0x%llx 0x%llx\n", name, pid, code, text,
++		    (code == 463) ? a0 : a1, a2);
+ 		return;
+ 	case 128:
+-		{
+-			char from[128], to[128];
+-
+-			sweet_sc_path(a0, from, sizeof(from));
+-			sweet_sc_path(a1, to, sizeof(to));
+-			printf("SC %s[%d] 128 \"%s\" -> \"%s\"\n", name, pid, from, to);
+-		}
++		printf("SC %s[%d] 128 \"%s\" -> \"%s\"\n", name, pid, text, text2);
+ 		return;
+ 	default:
+ 		break;
