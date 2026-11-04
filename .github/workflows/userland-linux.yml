@@ -69,11 +69,15 @@ jobs:
           printf 'int hakios_osmesa_stub;\n' > stub.c
           clang -target arm64-apple-ios16.5 -isysroot "$SDK" -dynamiclib \
             -install_name /usr/lib/libOSMesa.8.dylib -o libOSMesa.8.dylib stub.c
-          clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -fuse-ld=lld \
-            -install_name /redwood/lib/libhakios.gl.dylib -Iobj \
-            -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
-            libOSMesa.8.dylib -o libhakios.gl.dylib \
-            userland/src/eagl.c userland/src/gl_osmesa.c -undefined dynamic_lookup
+          if ! clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -v \
+              -fuse-ld=/usr/local/bin/ld64.lld -Wl,-adhoc_codesign \
+              -install_name /redwood/lib/libhakios.gl.dylib -Iobj \
+              -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
+              libOSMesa.8.dylib -o libhakios.gl.dylib \
+              userland/src/eagl.c userland/src/gl_osmesa.c -undefined dynamic_lookup; then
+            echo "link failed: the -v output above carries ld64.lld's own reason"
+            exit 1
+          fi
           file libhakios.gl.dylib
           ls -la libhakios.gl.dylib
           ldid -S libhakios.gl.dylib
