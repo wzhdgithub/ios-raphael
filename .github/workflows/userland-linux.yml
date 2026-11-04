@@ -71,7 +71,7 @@ jobs:
             -fuse-ld=/usr/local/bin/ld64.lld \
             -install_name /usr/lib/libOSMesa.8.dylib -o libOSMesa.8.dylib stub.c
           if ! clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -v \
-              -fuse-ld=/usr/local/bin/ld64.lld -Wl,-adhoc_codesign \
+              -fuse-ld=/usr/local/bin/ld64.lld -Wl,-adhoc_codesign \n              -Wl,-arch,arm64 -Wl,-platform_version,ios,16.5,16.5 \
               -install_name /redwood/lib/libhakios.gl.dylib -Iobj \
               -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
               libOSMesa.8.dylib -o libhakios.gl.dylib \
