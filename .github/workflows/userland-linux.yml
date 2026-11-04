@@ -68,6 +68,7 @@ jobs:
           wc -l obj/eagl_gen.h
           printf 'int hakios_osmesa_stub;\n' > stub.c
           clang -target arm64-apple-ios16.5 -isysroot "$SDK" -dynamiclib \
+            -fuse-ld=/usr/local/bin/ld64.lld \
             -install_name /usr/lib/libOSMesa.8.dylib -o libOSMesa.8.dylib stub.c
           if ! clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -v \
               -fuse-ld=/usr/local/bin/ld64.lld -Wl,-adhoc_codesign \
