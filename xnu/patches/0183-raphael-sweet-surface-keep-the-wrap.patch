@@ -1,0 +1,71 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 1996698..70c6c20 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -121,6 +121,9 @@ SweetSurface::kernelAddress()
+ 	if (buffer != NULL) {
+ 		return (uintptr_t)buffer->getBytesNoCopy();
+ 	}
++	if (clientAddress != 0 && kernelMap == NULL) {
++		return 0;                 /* the caller's memory, and no view of it was possible from here */
++	}
+ 	IOLockLock(sweet_surface_lock);
+ 	if (kernelMap == NULL && memory != NULL) {
+ 		kernelMap = memory->map(kIOMapWriteCombineCache);
+@@ -413,6 +416,7 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+  * back to the old buffer, so no surface is left worse off than it was.
+  */
+ static uint32_t sweet_wrap_took;            /* surfaces that took the caller's memory */
++static uint32_t sweet_wrap_noview;          /* ... and took it with no kernel view of its own */
+ static uint32_t sweet_wrap_fell;            /* and those that could not, and got our buffer */
+ 
+ static IOReturn
+@@ -437,22 +441,35 @@ sweet_surface_pixels(SweetSurface *s, OSDictionary *props)
+ 		}
+ 		if (held == kIOReturnSuccess) {
+ 			where = "map";
+-			IOMemoryMap *map = held_mem->createMappingInTask(kernel_task, 0, kIOMapAnywhere);
+-
+-			if (map != NULL) {
+-				s->memory = held_mem;
+-				s->kernelMap = map;          /* kernelAddress() finds this and maps nothing itself */
+-				s->clientAddress = user;
+-				s->mapCache = kIOMapDefaultCache;
+-				if (sweet_wrap_took++ < 60) {
+-					proc_selfname(name, sizeof(name));
+-					/* no id yet: the surface is published after its pixels are chosen */
+-					IOLog("SWEET WRAP: %s takes %u bytes at %#llx for %ux%u as its own pixels\n",
++			/* read-only, as HackiOS asks for (MiniIOSurface.cpp:659): the caller never gave
++			 * us leave to map its memory writeable from the kernel. */
++			IOMemoryMap *map = held_mem->createMappingInTask(kernel_task, 0,
++			    kIOMapAnywhere | kIOMapReadOnly);
++
++			s->memory = held_mem;
++			s->kernelMap = map;          /* NULL is allowed: see kernelAddress() */
++			s->clientAddress = user;
++			s->mapCache = kIOMapDefaultCache;
++			proc_selfname(name, sizeof(name));
++			if (map == NULL) {
++				/*
++				 * 0183: keep the wrap anyway. This map has only ever served OUR reading of a
++				 * surface -- 0177's watch, glshow, the framebuffer copy. The client maps the
++				 * memory itself and needs nothing from here, so falling back to a zeroed
++				 * buffer was a choice made to keep the diagnostics honest, not a necessity;
++				 * and t116 found it was the whole story of every shape still showing nothing:
++				 * prepare() passed for all of them and only this step said no.
++				 */
++				if (sweet_wrap_noview++ < 24) {
++					IOLog("SWEET WRAP: %s takes %u bytes at %#llx for %ux%u with no kernel view\n",
+ 					    name, s->allocSize, (unsigned long long)user, s->width, s->height);
+ 				}
+-				return kIOReturnSuccess;
++			} else if (sweet_wrap_took++ < 60) {
++				/* no id yet: the surface is published after its pixels are chosen */
++				IOLog("SWEET WRAP: %s takes %u bytes at %#llx for %ux%u as its own pixels\n",
++				    name, s->allocSize, (unsigned long long)user, s->width, s->height);
+ 			}
+-			held = kIOReturnVMError;
++			return kIOReturnSuccess;
+ 		}
+ 		OSSafeReleaseNULL(held_mem);
+ 		if (sweet_wrap_fell++ < 60) {
