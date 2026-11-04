@@ -255,6 +255,9 @@ struct eagl {
 	GLuint program;                 /* the one in use, as CoreAnimation has it */
 	GLuint plain, lookup;           /* programs of ours for when that is none (plain_draw_begin()) */
 	GLint plain_matrix, plain_textured, lookup_matrix;
+	GLuint backdrop;                /* ... and one that paints a wall where the wallpaper's picture is missing */
+	GLint backdrop_matrix;
+	unsigned long backdrop_frame;   /* (the frame that wall was painted for: one a frame, the first colour-only draw) */
 	GLuint vibrant, masking;        /* two more: what a colour matrix does to what is behind, and to the layer */
 	int blended;                    /* blending is off for such a draw, to be put back after it */
 	bool no_vibrant;                /* the first of the two could not be made */
@@ -1753,6 +1756,38 @@ static const char plain_fragment[] =
     "}\n";
 
 /*
+ * The home screen's wallpaper, which this port has no picture for: the rootfs' wallpaper media is
+ * empty (every HEIC under /Library/Wallpaper is 0 bytes and Apple's com_apple_MobileAsset_Wallpaper
+ * payload is not in the image), so the draw CoreAnimation makes for it -- no program, no texture,
+ * the colour alone, over the whole surface -- would paint white, and is dropped instead (see
+ * plain_draw_begin()). Dropped is black. With boot-arg glwallpaper=1 that first colour-only draw of
+ * a frame paints a wall of ours instead: a slow vertical gradient, dark blue to teal, so the home
+ * screen is a wallpaper rather than a hole. It is our picture, not iOS's: the lock screen keeps the
+ * poster CoreAnimation does have a texture for.
+ */
+static const char backdrop_vertex[] =
+    "#version 300 es\n"
+    "uniform highp mat4 vertex_matrix;\n"
+    "in highp vec4 vertex_position;\n"
+    "out highp vec2 place;\n"
+    "void main() {\n"
+    "  gl_Position = vertex_matrix * vertex_position;\n"
+    "  place = gl_Position.xy / gl_Position.w;\n"
+    "}\n";
+static const char backdrop_fragment[] =
+    "#version 300 es\n"
+    "in highp vec2 place;\n"
+    "out lowp vec4 result;\n"
+    "void main() {\n"
+    "  highp float t = clamp(place.y * 0.5 + 0.5, 0.0, 1.0);\n"
+    "  mediump vec3 low = vec3(0.020, 0.245, 0.290);\n"
+    "  mediump vec3 high = vec3(0.075, 0.135, 0.260);\n"
+    "  mediump vec3 wall = mix(low, high, t);\n"
+    "  wall += 0.022 * sin(t * 7.0);\n"
+    "  result = vec4(wall, 1.0);\n"
+    "}\n";
+
+/*
  * One kind of them has a second texture, on the second unit: a table, one row of pixels (seen:
  * 256 of two parts, brightness and opacity). What is drawn so is the home indicator, the bar at
  * the bottom of the screen that is light over dark pictures and dark over light ones. It is a
@@ -1950,6 +1985,9 @@ hakios_gl_function_values(void *context, unsigned function, unsigned index, size
 
 /* boot-arg glplain=0: leave such draws as they are; 2: also those without a texture; 3: the two with a colour matrix drawn plainly too */
 static int plain_draws = 1;
+/* boot-arg glwallpaper=1: the frame's first colour-only draw paints a wall of ours (the home screen's
+ * wallpaper is a picture this rootfs does not have; see backdrop_fragment). */
+static int backdrop_on;
 
 /*
  * The blur whose radius varies over the picture (the filter variableBlur with a mask: the strip
@@ -2320,7 +2358,7 @@ plain_program(const char *fragment, const char *what)
  * count of each since the start.
  */
 enum { CENSUS_NOT_DRAWN, CENSUS_PLAIN, CENSUS_TABLE, CENSUS_VIBRANT, CENSUS_MASKING, CENSUS_BOX, CENSUS_BLUR4, CENSUS_LEVEL,
-       CENSUS_VBLUR, CENSUS_KINDS };
+       CENSUS_VBLUR, CENSUS_BACKDROP, CENSUS_KINDS };
 static const char *const census_kinds[CENSUS_KINDS] = {
 	"NOT DRAWN (no program, and no texture, or nothing of ours to draw it with, or it would read what it writes)", "drawn as the picture it is given (colour times texture)",
 	"drawn through a table (ours, for the home indicator)", "drawn with our program for a colour matrix over what is behind",
@@ -2329,6 +2367,7 @@ static const char *const census_kinds[CENSUS_KINDS] = {
 	"drawn with our program that averages four samples around a point (a shadow's blur)",
 	"made into a level of ours, half the size of the one before (a blur whose radius varies)",
 	"drawn with our program that reads the levels by the mask (a blur whose radius varies)",
+	"drawn with our program that paints a wall of ours (the wallpaper's picture is not in this rootfs)",
 };
 static int census_on;
 static struct census {
@@ -2976,12 +3015,40 @@ plain_draw_begin(struct eagl *e, GLint enabled[4])
 	 * its own memory -- nothing -- and wrote that over everything: every launch image SpringBoard
 	 * keeps came out black, and with it the zoom that opens an application the first time.
 	 */
+	if (e->bound[0] == 0 && backdrop_on != 0 && plain_draws != 0 && !reads_what_it_writes(e) &&
+	    e->backdrop_frame != e->frames + 1) {
+		/*
+		 * The wallpaper. CoreAnimation paints the home screen's background with no program and no
+		 * texture -- the colour alone, over the whole surface -- because the picture it would
+		 * multiply by is not in this rootfs: every HEIC under /Library/Wallpaper is 0 bytes and
+		 * Apple's com_apple_MobileAsset_Wallpaper payload was not shipped. Drawn as its colour it
+		 * is white, so it is dropped and the screen is black; glwallpaper=1 paints a wall of ours
+		 * under it instead. The first such draw of a frame only, since the icons, the dock and the
+		 * widgets are drawn after the background and over it.
+		 */
+		if (e->backdrop == 0) {
+			e->backdrop = plain_program(backdrop_fragment, "a wall where the wallpaper's picture is missing");
+			e->backdrop_matrix = glGetUniformLocation(e->backdrop, "vertex_matrix");
+		}
+		if (e->backdrop != 0) {
+			e->backdrop_frame = e->frames + 1;
+			census_draw(e, function, CENSUS_BACKDROP);
+			glUseProgram(e->backdrop);
+			glUniformMatrix4fv(e->backdrop_matrix, 1, 0, e->matrix != NULL ? e->matrix : identity);
+			for (GLuint i = 0; i < 3; i++) {
+				glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled[i]);
+				if (!enabled[i]) {
+					glEnableVertexAttribArray(i);
+				}
+			}
+			return true;
+		}
+	}
 	if (!plain_draws || (plain_draws == 1 && e->bound[0] == 0) || reads_what_it_writes(e) ||
 	    (e->colour != 0 && e->colour == e->bound[0])) {
 		census_draw(e, function, CENSUS_NOT_DRAWN);
 		return false;
-	}
-	if (function < 90 && !said[function]) {
+	}	if (function < 90 && !said[function]) {
 		said[function] = 1;
 		say("hakios-gl: a draw with no program is CoreAnimation's function %u (\"%s\")\n", function, census_name(function));
 	}
@@ -4339,6 +4406,7 @@ install(void)
 		if ((argument = strstr(arguments, "glplain=")) != NULL) {
 			plain_draws = (int)strtoul(argument + 8, NULL, 10);
 		}
+		backdrop_on = strstr(arguments, "glwallpaper=1") != NULL;
 		if ((argument = strstr(arguments, "glskip=")) != NULL) {
 			const char *at = argument + 7;
 
