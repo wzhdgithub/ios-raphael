@@ -723,6 +723,40 @@ surface_to_texture(struct eagl *e, struct image *image)
 	}
 	base = planar ? IOSurfaceGetBaseAddressOfPlane(surface, image->plane) : IOSurfaceGetBaseAddress(surface);
 	mapped = base;
+	/*
+	 * SWEET 0184: a surface with no pixel format is one of two shapes, and the bytes say which. A
+	 * sign an application draws to be tinted carries its picture in one place of every four --
+	 * opacity first, the other three nothing -- and that is the case the attach-time rule assumed
+	 * for all of them. An icon as IconServices rasterizes it has all four places filled, and those
+	 * are ordinary blue-first pixels, the order every surface whose format we do know uses. Reading
+	 * the coloured ones opacity first rotates them by a byte: the opacity lands in red, so grey
+	 * comes out pink and the green Phone sign magenta -- which is what t117's home screen showed.
+	 */
+	if (alpha_first) {
+		static unsigned swizzle_said;
+		size_t n = row * (size_t) image->height;
+		size_t room = IOSurfaceGetAllocSize(surface);
+		size_t lane_seen[4] = { 0, 0, 0, 0 };
+
+		if (n > room) {
+			n = room;
+		}
+		if (n > 8192) {
+			n = 8192;                         /* a few thousand bytes tell the two apart */
+		}
+		for (size_t at = 0; at < n; at++) {
+			lane_seen[at & 3] += mapped[at] != 0;
+		}
+		if (lane_seen[1] != 0 || lane_seen[2] != 0 || lane_seen[3] != 0) {
+			alpha_first = false;
+		}
+		if (swizzle_said++ < 24) {
+			say("hakios-gl: surface %u %d x %d with no pixel format: not zero in %zu %zu %zu %zu of the first "
+			    "%zu bytes, read %s\n", IOSurfaceGetID(surface), image->width, image->height,
+			    lane_seen[0], lane_seen[1], lane_seen[2], lane_seen[3], n,
+			    alpha_first ? "opacity first" : "blue first");
+		}
+	}
 	if ((image->invert || alpha_first) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
 		for (GLsizei y = 0; y < image->height; y++) {
 			const uint8_t *from = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
