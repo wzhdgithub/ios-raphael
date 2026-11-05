@@ -75,8 +75,12 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pwd.h>
+#include <sys/attr.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 
 #include "hakios.gl.h"
 
@@ -4383,11 +4387,163 @@ probe_darwin_dirs(void)
 	}
 }
 
+/*
+ * Which operation in making a daemon's own directory answers EIO. t123 asked confstr and got errno 5
+ * for DIR and CACHE, so the fix is to stop guessing and do the same primitives one at a time: read
+ * the volume's UUID the way the per-user path is derived from it, ask what the volume is mounted as,
+ * make a directory, own it, stamp it with an attribute, and write and fsync a file. One of those lines
+ * is the defect that keeps /private/var/folders empty, which is where a poster's or a widget's own
+ * registry lives. Everything the probe makes is taken away again, so the next round sees the same
+ * empty tree this one did.
+ */
+static void
+probe_psd_steps(void)
+{
+	static const char *const uuid_of[] = { "/", "/private/var", "/var/mobile" };
+	/*
+	 * The tree libsystem makes for itself is /private/var/folders/<two>/<twenty-four>/0, C and T -- the
+	 * first component two characters wide, which is what a daemon has to be able to create in
+	 * /private/var/folders before it can put anything under its own directory. Making and removing a
+	 * tree of the same shape says whether this process may, and the answer is the fix's whole subject.
+	 */
+	static const char dir[] = "/private/var/folders/ps";
+	static const char leaf[] = "/private/var/folders/ps/probe-of-501";
+	static const char file[] = "/var/tmp/hackios-probe";
+	static const char mark[] = "com.apple.hackios.probe";
+	unsigned char answer[64];
+	unsigned char pattern[8192];
+	char names[256];
+	char stamp = '1';
+	struct attrlist list;
+	struct statfs mounted;
+	struct passwd *pw;
+	const char *tmp = getenv("TMPDIR");
+	long left;
+	int fd;
+	int rc;
+
+	say("psd: TMPDIR \"%s\", HOME \"%s\"\n", tmp != NULL ? tmp : "(unset)",
+	    getenv("HOME") != NULL ? getenv("HOME") : "(unset)");
+
+	bzero(&list, sizeof(list));
+	list.bitmapcount = ATTR_BIT_MAP_COUNT;
+	list.commonattr = 0;
+	list.volattr = ATTR_VOL_INFO | ATTR_VOL_UUID;
+	for (unsigned i = 0; i < sizeof(uuid_of) / sizeof(uuid_of[0]); i++) {
+		unsigned section;
+
+		errno = 0;
+		bzero(answer, sizeof(answer));
+		rc = getattrlist(uuid_of[i], &list, answer, sizeof(answer), 0);
+		memcpy(&section, answer, sizeof(section));
+		say("psd: uuid of %s rc %d errno %d, section %u bytes, uuid %02x%02x%02x%02x-%02x%02x-%02x%02x\n",
+		    uuid_of[i], rc, errno, section, answer[4], answer[5], answer[6], answer[7],
+		    answer[8], answer[9], answer[10], answer[11]);
+	}
+
+	errno = 0;
+	bzero(&mounted, sizeof(mounted));
+	rc = statfs("/var/mobile", &mounted);
+	say("psd: statfs rc %d errno %d, \"%s\" is %s, flags %#x, ro %d\n", rc, errno, mounted.f_mntfromname,
+	    mounted.f_fstypename, (unsigned)mounted.f_flags, (mounted.f_flags & MNT_RDONLY) != 0);
+
+	pw = getpwuid(getuid());
+	say("psd: getpwuid rc %d, name %s uid %d home %s\n", pw != NULL,
+	    pw != NULL && pw->pw_name != NULL ? pw->pw_name : "(none)",
+	    pw != NULL ? (int)pw->pw_uid : -1,
+	    pw != NULL && pw->pw_dir != NULL ? pw->pw_dir : "(none)");
+	/*
+	 * If that failed, ask why. The account files are read through /etc, and on iOS /etc is a link to
+	 * private/etc; this rootfs does hold /private/etc/master.passwd (3000 bytes, the mobile line for
+	 * uid 501 among them, read off the flash in recovery) and the volume is mounted read-write, so a
+	 * lookup that comes back empty is either a /etc that does not resolve or a directory the reader
+	 * wants for itself and cannot make. uid 0 answers the first at once: if root resolves, the file is
+	 * being read and only 501 is wrong; if root does not, nothing is being read.
+	 */
+	{
+		static const char *const acct[] = { "/private/etc/master.passwd", "/etc/master.passwd",
+			"/etc/passwd", "/private/etc/group", "/private/var/folders" };
+		struct stat st;
+		char target[256];
+		ssize_t n;
+
+		for (unsigned i = 0; i < sizeof(acct) / sizeof(acct[0]); i++) {
+			errno = 0;
+			bzero(&st, sizeof(st));
+			rc = stat(acct[i], &st);
+			say("psd: stat %s rc %d errno %d, %s %llu\n", acct[i], rc, errno,
+			    S_ISLNK(st.st_mode) ? "link" : S_ISDIR(st.st_mode) ? "dir" : "file",
+			    (unsigned long long)st.st_size);
+		}
+		errno = 0;
+		n = readlink("/etc", target, sizeof(target) - 1);
+		say("psd: readlink /etc -> %ld bytes errno %d, \"%.*s\"\n", (long)n, errno,
+		    n > 0 ? (int)n : 0, n > 0 ? target : "");
+		errno = 0;
+		pw = getpwuid(0);
+		say("psd: getpwuid(0) errno %d, name %s home %s\n", errno,
+		    pw != NULL && pw->pw_name != NULL ? pw->pw_name : "(none)",
+		    pw != NULL && pw->pw_dir != NULL ? pw->pw_dir : "(none)");
+		pw = NULL;
+	}
+
+	errno = 0;
+	rc = mkdir(dir, 0755);
+	say("psd: mkdir %s rc %d errno %d\n", dir, rc, errno);
+	if (rc == 0 || errno == EEXIST) {
+		errno = 0;
+		rc = mkdir(leaf, 0755);
+		say("psd: mkdir %s rc %d errno %d\n", leaf, rc, errno);
+		if (rc == 0 || errno == EEXIST) {
+			errno = 0;
+			rc = chown(leaf, getuid(), pw != NULL ? pw->pw_gid : 0);
+			say("psd: chown rc %d errno %d\n", rc, errno);
+			errno = 0;
+			rc = chmod(leaf, 0755);
+			say("psd: chmod rc %d errno %d\n", rc, errno);
+			errno = 0;
+			rc = setxattr(leaf, mark, &stamp, 1, 0, 0);
+			say("psd: setxattr rc %d errno %d\n", rc, errno);
+			errno = 0;
+			rc = listxattr(leaf, names, sizeof(names), 0);
+			say("psd: listxattr rc %d errno %d, first \"%s\"\n", rc, errno, rc > 0 ? names : "(none)");
+			(void)removexattr(leaf, mark, 0);
+		}
+		errno = 0;
+		rc = rmdir(leaf);
+		say("psd: rmdir rc %d errno %d\n", rc, errno);
+		(void)rmdir(dir);
+	}
+
+	for (size_t i = 0; i < sizeof(pattern); i++) {
+		pattern[i] = (unsigned char)(i % 251);
+	}
+	errno = 0;
+	fd = open(file, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+	say("psd: open create rc %d errno %d\n", fd, errno);
+	if (fd >= 0) {
+		left = (int)sizeof(pattern);
+		errno = 0;
+		rc = (int)write(fd, pattern, sizeof(pattern));
+		say("psd: write rc %d errno %d (asked %ld)\n", rc, errno, left);
+		errno = 0;
+		rc = fsync(fd);
+		say("psd: fsync rc %d errno %d\n", rc, errno);
+		errno = 0;
+		rc = close(fd);
+		say("psd: close rc %d errno %d\n", rc, errno);
+		errno = 0;
+		rc = unlink(file);
+		say("psd: unlink rc %d errno %d\n", rc, errno);
+	}
+}
+
 __attribute__((constructor)) static void
 install(void)
 {
 	install_crash_handler();
 	probe_darwin_dirs();
+	probe_psd_steps();
 	static const struct {
 		const char *name;
 		IMP ours;
