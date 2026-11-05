@@ -175,6 +175,11 @@ say(const char *format, ...)
 	write(2, line, (size_t)n);
 }
 
+/* Whether the wall's hook is reachable at all. t122 showed no wall and the log has no line either
+ * way -- the absence of a print is not the absence of a draw -- so both counts ride the frame line. */
+static unsigned long backdrop_seen;
+static unsigned long backdrop_paints;
+
 static void
 eagl_trace(const char *format, ...)
 {
@@ -1991,10 +1996,6 @@ static int plain_draws = 1;
 /* boot-arg glwallpaper=1: the frame's first colour-only draw paints a wall of ours (the home screen's
  * wallpaper is a picture this rootfs does not have; see backdrop_fragment). */
 static int backdrop_on;
-/* Whether that hook is reachable at all. t122 showed no wall and the log has no line either way --
- * the absence of a print is not the absence of a draw -- so both counts ride on the frame line. */
-static unsigned long backdrop_seen;
-static unsigned long backdrop_paints;
 
 /*
  * The blur whose radius varies over the picture (the filter variableBlur with a mask: the strip
