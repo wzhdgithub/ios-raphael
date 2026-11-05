@@ -42,6 +42,11 @@ jobs:
       REF: ${{ inputs.ref || 'raphael-bringup' }}
       JOBS: ${{ inputs.jobs || '3' }}
     steps:
+      - name: Our repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Host tools
         run: |
           brew install coreutils gnu-sed flex bison m4 || true
