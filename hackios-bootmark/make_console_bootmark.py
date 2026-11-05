@@ -42,10 +42,10 @@ hakios_draw_bootmark(void)
 		 * phone's flash, and a kernel that has to be told to draw its picture is not useful. */
 		asked = PE_parse_boot_argn("bootmark", &want, sizeof(want)) ? want : 1;
 	}
-	if (asked == 0 || vinfo.v_depth != 32 || vinfo.v_baseAddr == 0 || vinfo.v_rowbytes < 4) {
+	if (asked == 0 || vinfo.v_depth != 32 || vinfo.v_baseaddr == 0 || vinfo.v_rowbytes < 4) {
 		return;
 	}
-	fb = (volatile uint32_t *)(uintptr_t)vinfo.v_baseAddr;
+	fb = (volatile uint32_t *)(uintptr_t)vinfo.v_baseaddr;
 	cols = vinfo.v_rowbytes / 4;
 	for (y = 0; y < vinfo.v_height; y++) {
 		for (x = 0; x < cols && x < vinfo.v_width; x++) {
