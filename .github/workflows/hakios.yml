@@ -98,6 +98,17 @@ jobs:
           PY
           sed -n '/^respond:/,+5p' bsd/dev/hakios.wifi.c
 
+      - name: The boot mark in the video console
+        run: |
+          cd hakios/xnu-src/xnu-8796.121.2
+          # The entering-iOS screen is drawn here, not by the loader: the loader's print() only goes
+          # to its log and the serial line, and it hands the panel over as PE_Video. This inserts the
+          # RLE and one call at the end of initialize_screen(); bootmark=0 in the boot payload turns
+          # it back off without a rebuild.
+          python3 "$GITHUB_WORKSPACE/hackios-bootmark/make_console_bootmark.py" \
+              osfmk/console/video_console.c "$GITHUB_WORKSPACE/hackios-bootmark/bootmark.h"
+          grep -c hakios_draw_bootmark osfmk/console/video_console.c
+
       - name: Dependencies, stage 1 (SDK, mig, unifdef, tcsh, iig headers)
         run: |
           cd hakios
