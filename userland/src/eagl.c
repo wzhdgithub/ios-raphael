@@ -74,6 +74,9 @@
 #include <signal.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include <errno.h>
+#include <pwd.h>
+#include <sys/stat.h>
 
 #include "hakios.gl.h"
 
@@ -1231,9 +1234,9 @@ frame_end(struct eagl *e, bool finished)
 	if (e->frames <= 40 || e->frames % 20 == 0) {
 		say("hakios-gl: frame %u: %u GL calls, %u draws, %u triangles, %u clears; %u textures refilled from IOSurfaces "
 		    "(%llu KB); %u picture%s copied out, %u drawn in place; %llu us (%llu handing on, %llu waiting, %llu copying "
-		    "out), %llu before it for the IOSurfaces\n", e->frames, e->calls, e->draws, e->triangles, e->clears, e->uploads,
+		    "out), %llu before it for the IOSurfaces; the wall: %lu seen, %lu painted\n", e->frames, e->calls, e->draws, e->triangles, e->clears, e->uploads,
 		    e->upload_bytes >> 10, copied, copied == 1 ? "" : "s", in_place, after - e->began, e->flushing, waited - before,
-		    after - waited, e->attaching);
+		    after - waited, e->attaching, backdrop_seen, backdrop_paints);
 	}
 	if (e->frames == 30 || e->frames % 200 == 0) {
 		summary(e);
@@ -1988,6 +1991,10 @@ static int plain_draws = 1;
 /* boot-arg glwallpaper=1: the frame's first colour-only draw paints a wall of ours (the home screen's
  * wallpaper is a picture this rootfs does not have; see backdrop_fragment). */
 static int backdrop_on;
+/* Whether that hook is reachable at all. t122 showed no wall and the log has no line either way --
+ * the absence of a print is not the absence of a draw -- so both counts ride on the frame line. */
+static unsigned long backdrop_seen;
+static unsigned long backdrop_paints;
 
 /*
  * The blur whose radius varies over the picture (the filter variableBlur with a mask: the strip
@@ -3015,6 +3022,9 @@ plain_draw_begin(struct eagl *e, GLint enabled[4])
 	 * its own memory -- nothing -- and wrote that over everything: every launch image SpringBoard
 	 * keeps came out black, and with it the zoom that opens an application the first time.
 	 */
+	if (e->bound[0] == 0) {
+		backdrop_seen++;		/* a draw with no program and no texture: the wallpaper's shape */
+	}
 	if (e->bound[0] == 0 && backdrop_on != 0 && plain_draws != 0 && !reads_what_it_writes(e) &&
 	    e->backdrop_frame != e->frames + 1) {
 		/*
@@ -3033,6 +3043,10 @@ plain_draw_begin(struct eagl *e, GLint enabled[4])
 		if (e->backdrop != 0) {
 			e->backdrop_frame = e->frames + 1;
 			census_draw(e, function, CENSUS_BACKDROP);
+			if (backdrop_paints++ == 0) {
+				say("hakios-gl: the wall of ours was painted, for frame %lu (function %u)\n",
+				    e->frames + 1, function);
+			}
 			glUseProgram(e->backdrop);
 			glUniformMatrix4fv(e->backdrop_matrix, 1, 0, e->matrix != NULL ? e->matrix : identity);
 			for (GLuint i = 0; i < 3; i++) {
@@ -4330,10 +4344,49 @@ install_crash_handler(void)
 	sigaction(SIGBUS, &action, NULL);
 }
 
+/*
+ * Where a daemon is told to keep its own files. confstr's three Darwin directories are how iOS finds
+ * the per-user caches, and the registry that makes a poster or a widget visible lives under
+ * /private/var/folders -- read off the volume in TWRP, that tree exists and holds nothing at all,
+ * while PosterBoard traps in its switcher setup with no GPU framework loaded and the widget renderer
+ * is never exec'd. So the question this run has to answer is what a daemon is actually handed here:
+ * a path that exists, a path that was never made, or no answer at all.
+ */
+static void
+probe_darwin_dirs(void)
+{
+	static const struct {
+		int asked;
+		const char *name;
+	} dirs[] = {
+		{ _CS_DARWIN_USER_DIR, "DIR" },
+		{ _CS_DARWIN_USER_TEMP_DIR, "TEMP" },
+		{ _CS_DARWIN_USER_CACHE_DIR, "CACHE" },
+	};
+	char text[512];
+	struct stat st;
+
+	for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+		size_t n = confstr(dirs[i].asked, text, sizeof(text) - 1);
+		if (n == 0) {
+			say("hakios-gl: confstr(_CS_DARWIN_USER_%s) gave nothing, errno %d\n", dirs[i].name, errno);
+			continue;
+		}
+		text[n > 1 ? n - 1 : 0] = '\0';
+		say("hakios-gl: confstr(_CS_DARWIN_USER_%s) = \"%s\" and it %s\n", dirs[i].name, text,
+		    stat(text, &st) == 0 ? "exists" : "does not exist");
+	}
+	{
+		struct passwd *pw = getpwuid(getuid());
+		say("hakios-gl: uid %u, home \"%s\"\n", getuid(), pw != NULL ? pw->pw_dir : "(none)");
+	}
+}
+
 __attribute__((constructor)) static void
 install(void)
 {
 	install_crash_handler();
+	probe_darwin_dirs();
 	static const struct {
 		const char *name;
 		IMP ours;
