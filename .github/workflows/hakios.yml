@@ -1,0 +1,112 @@
+name: hakios
+
+# Task #18: build the Helium Studio kernel tree (hackios-xnu-kernel, branch raphael-bringup) so it can
+# become our base. Two reasons it runs here rather than on the desktop:
+#
+#   * this machine cannot fetch the sources at any usable speed -- measured 15-21 KB/s from
+#     codeload.github.com with every stream cut near 12 MB, byte ranges refused (200, not 206), and the
+#     local GitHub accelerator at ~0.1 MB/min. A runner pulls the same tag in seconds;
+#   * their xnu-deps/setup.sh has a Darwin path that needs no Linux cctools at all -- it links Xcode's
+#     own ld/mig/migcom/unifdef/tcsh into xnu-deps/theos-mac, which removes the biggest unknown of a
+#     local build (where ld64 for Linux would come from).
+#
+# Their README: "It builds on Linux with stock clang (no macOS, no Xcode) and on macOS with Xcode."
+# Xcode 14/15-era runners are chosen because our own XNU builds need that iig ABI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: kernel repository to build
+        default: https://github.com/HeliumStudio-Dev/hackios-xnu-kernel.git
+      ref:
+        description: branch or tag
+        default: raphael-bringup
+      runner:
+        description: GitHub runner label
+        default: macos-14
+      jobs:
+        description: -j for the kernel build
+        default: "3"
+
+concurrency:
+  group: hakios-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kernel:
+    runs-on: ${{ inputs.runner || 'macos-14' }}
+    timeout-minutes: 150
+    env:
+      REPO_URL: ${{ inputs.repo_url || 'https://github.com/HeliumStudio-Dev/hackios-xnu-kernel.git' }}
+      REF: ${{ inputs.ref || 'raphael-bringup' }}
+      JOBS: ${{ inputs.jobs || '3' }}
+    steps:
+      - name: Host tools
+        run: |
+          brew install coreutils gnu-sed flex bison m4 || true
+          sw_vers
+          xcodebuild -version
+          for tool in git curl tar xz make cc clang clang++ flex bison m4 perl python3; do
+            printf '%-9s %s\n' "$tool" "$(command -v $tool || echo MISSING)"
+          done
+
+      - name: Their repository
+        run: |
+          git clone -q --depth 1 --branch "$REF" "$REPO_URL" hakios
+          cd hakios
+          git log --oneline -1
+          echo "--- what the kernel build expects:"
+          sed -n 1,20p xnu-env.sh
+          ls xnu xnuloader tools userland sysimage devices
+
+      - name: XNU sources plus their patch
+        run: |
+          cd hakios
+          bash xnu/apply.sh 2>&1 | tail -20
+          tree=xnu-src/xnu-8796.121.2
+          test -d "$tree"
+          git -C "$tree" rev-parse HEAD
+          git -C "$tree" status --short | wc -l
+          ls "$tree/osfmk/arm64/gic_v3_irq.c" "$tree/bsd/dev/hakios.adreno.c" "$tree/bsd/miscfs/ramfs/ramfs.c"
+
+      - name: Dependencies, stage 1 (SDK, mig, unifdef, tcsh, iig headers)
+        run: |
+          cd hakios
+          set +e
+          bash xnu-deps/setup.sh --stage1 2>&1 | tail -60
+          rc=$?
+          tail -40 xnu-deps/*.log 2>/dev/null
+          exit $rc
+
+      - name: Dependencies, stage 2 (the two libraries built against kernel headers)
+        run: |
+          cd hakios
+          bash xnu-deps/setup.sh --stage2 2>&1 | tail -40
+          ls xnu-deps/host/bin | head -30
+
+      - name: Build the kernel
+        run: |
+          cd hakios
+          set +e
+          # -k on purpose: their build always ends in check_all_exports after the link (xnu/README.md),
+          # so the file date is the test, not make's exit code.
+          ./xnu-build.sh -j"$JOBS" -k > ../kernel.log 2>&1
+          echo "make exit $? (the export-list error at the end is expected)"
+          tail -40 ../kernel.log
+          found=$(find BUILD/obj -name 'mach.development*' -o -name 'mach.release*' | head -5)
+          echo "--- products:"; echo "$found"
+          for f in $found; do ls -l "$f"; shasum -a 256 "$f"; done
+          echo "--- their prebuilt kernel, for comparison:"
+          shasum -a 256 prebuilt/mach.development.bcm2837
+
+      - name: Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hakios-kernel-${{ github.run_id }}
+          path: |
+            hakios/BUILD/obj/**/mach.development*
+            kernel.log
+            hakios/xnu-deps/*.log
+          if-no-files-found: warn
+          retention-days: 14
