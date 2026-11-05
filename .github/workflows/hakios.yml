@@ -128,13 +128,22 @@ jobs:
           echo "--- their prebuilt kernel, for comparison:"
           shasum -a 256 prebuilt/mach.development.bcm2837
 
+      - name: Stage the products
+        run: |
+          cd hakios/xnu-src/xnu-8796.121.2
+          mkdir -p ../../../dist
+          # The build lands in BUILD/obj/DEVELOPMENT_ARM64_BCM2837, not in BUILD/obj itself, and the
+          # 9 KB artifact of the first rounds was the log and nothing else.
+          cp -v BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development* ../../../dist/ 2>/dev/null || true
+          cp -v ../xnu-deps/*.log ../../../dist/ 2>/dev/null || true
+          ls -l ../../../dist
+
       - name: Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: hakios-kernel-${{ github.run_id }}
           path: |
-            hakios/BUILD/obj/**/mach.development*
+            dist
             kernel.log
-            hakios/xnu-deps/*.log
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
