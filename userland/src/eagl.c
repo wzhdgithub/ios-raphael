@@ -4471,9 +4471,9 @@ probe_psd_steps(void)
 			errno = 0;
 			bzero(&st, sizeof(st));
 			rc = stat(acct[i], &st);
-			say("psd: stat %s rc %d errno %d, %s %llu\n", acct[i], rc, errno,
+			say("psd: stat %s rc %d errno %d, %s %llu, owner %d\n", acct[i], rc, errno,
 			    S_ISLNK(st.st_mode) ? "link" : S_ISDIR(st.st_mode) ? "dir" : "file",
-			    (unsigned long long)st.st_size);
+			    (unsigned long long)st.st_size, (int)st.st_uid);
 		}
 		errno = 0;
 		n = readlink("/etc", target, sizeof(target) - 1);
@@ -4515,6 +4515,29 @@ probe_psd_steps(void)
 		(void)rmdir(dir);
 	}
 
+	if (getuid() == 0) {
+		/*
+		 * On a real iPhone the two-character directories under /private/var/folders are made once by a
+		 * root service at first boot, because the folder itself belongs to root at 0755 and the user's
+		 * daemons -- uid 501, which is everyone -- may not create anything in it. There is no such
+		 * service in this rootfs, which is why the tree has never held a single entry. The boot job runs
+		 * as root, so hand the parent to the user it is meant for and let libsystem make its own tree,
+		 * under the names it computes and owned by the right uid. This is on-disk metadata: it stays.
+		 */
+		struct stat st;
+
+		errno = 0;
+		rc = chown("/private/var/folders", 501, 501);
+		say("psd: root chown folders rc %d errno %d\n", rc, errno);
+		errno = 0;
+		rc = chmod("/private/var/folders", 0755);
+		say("psd: root chmod folders rc %d errno %d\n", rc, errno);
+		errno = 0;
+		rc = stat("/private/var/folders", &st);
+		say("psd: folders now rc %d errno %d, mode %06o owner %d\n", rc, errno,
+		    (unsigned)st.st_mode, (int)st.st_uid);
+	}
+
 	for (size_t i = 0; i < sizeof(pattern); i++) {
 		pattern[i] = (unsigned char)(i % 251);
 	}
@@ -4535,6 +4558,19 @@ probe_psd_steps(void)
 		errno = 0;
 		rc = unlink(file);
 		say("psd: unlink rc %d errno %d\n", rc, errno);
+	}
+	{
+		/* Ask again, after everything above: a second answer is a different one from the first. */
+		char text[512];
+		size_t n;
+
+		errno = 0;
+		n = confstr(_CS_DARWIN_USER_DIR, text, sizeof(text) - 1);
+		if (n > 1) {
+			text[n - 1] = '\0';
+		}
+		say("psd: confstr again -> %lu errno %d, \"%s\"\n", (unsigned long)n, errno,
+		    n > 1 ? text : "(none)");
 	}
 }
 
