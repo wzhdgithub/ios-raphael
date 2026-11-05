@@ -70,6 +70,34 @@ jobs:
           git -C "$tree" status --short | wc -l
           ls "$tree/osfmk/arm64/gic_v3_irq.c" "$tree/bsd/dev/hakios.adreno.c" "$tree/bsd/miscfs/ramfs/ramfs.c"
 
+      - name: One source fix for Apple clang
+        run: |
+          cd hakios/xnu-src/xnu-8796.121.2
+          # bsd/dev/hakios.wifi.c puts a declaration straight after the label "respond:", which is a
+          # statement only in C23 and in the LLVM their builder used; Apple clang says "expected
+          # expression" and then that payload_size is undeclared. Braces make it a compound statement
+          # and change nothing else. It is the only such site in their added files (checked with awk).
+          python3 - <<'PY'
+          import pathlib
+          path = pathlib.Path('bsd/dev/hakios.wifi.c')
+          text = path.read_text()
+          before = 'respond:\n\tuint16_t payload_size = (uint16_t)(used - 7);\n' \
+                   '\tmemcpy(reply + 5, &payload_size, 2);\n' \
+                   '\tqrtr_send(pd_mapper_port, node, port, reply, used);\n'
+          after = 'respond:\n\t{\n\t\tuint16_t payload_size = (uint16_t)(used - 7);\n' \
+                  '\t\tmemcpy(reply + 5, &payload_size, 2);\n' \
+                  '\t\tqrtr_send(pd_mapper_port, node, port, reply, used);\n\t}\n'
+          if before not in text:
+              if after in text:
+                  print('already fixed')
+              else:
+                  raise SystemExit('the expected respond: block is not there -- look at the file')
+          else:
+              path.write_text(text.replace(before, after, 1))
+              print('wrapped the declaration after respond: in a block')
+          PY
+          sed -n '/^respond:/,+5p' bsd/dev/hakios.wifi.c
+
       - name: Dependencies, stage 1 (SDK, mig, unifdef, tcsh, iig headers)
         run: |
           cd hakios
