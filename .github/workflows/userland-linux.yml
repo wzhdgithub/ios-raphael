@@ -59,6 +59,29 @@ jobs:
           git -C sdks sparse-checkout set iPhoneOS16.5.sdk
           ls sdks/iPhoneOS16.5.sdk | head
 
+      - name: Mesa (the dylib the image already carries, from the last green macos build)
+        # The first linux attempt linked against a one-symbol stub with -undefined dynamic_lookup.
+        # It linked and the phone loaded it, but the OSMesa entry points resolved to nothing: the
+        # EAGL context came up with "(null); (null); shaders (null)" instead of "OpenGL ES 3.2
+        # Mesa 25.0.7; FD640", and the window server fell back to the software rasterizer for the
+        # whole session (0 hakios-gl frames). Linking against the real library, as the macOS build
+        # does, keeps the two-level binding that made it work there.
+        run: |
+          curl -fsSL -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=userland-gl&per_page=30" \
+            -o artifacts.json
+          python3 - <<'PY' > artifact_url.txt
+          import json
+          arts = [a for a in json.load(open('artifacts.json'))['artifacts'] if not a['expired']]
+          arts.sort(key=lambda a: a['created_at'], reverse=True)
+          print(arts[0]['archive_download_url'])
+          PY
+          curl -fsSL -H "Authorization: token ${{ github.token }}" "$(cat artifact_url.txt)" -o gl.zip
+          python3 -c "import zipfile; zipfile.ZipFile('gl.zip').extractall('gl')" || \
+            unzip -q gl.zip -d gl
+          find gl -name 'libOSMesa.8.dylib' -size +1M -print -exec cp {} ./libOSMesa.8.dylib \;
+          ls -la libOSMesa.8.dylib
+
       - name: the table, then the dylib
         run: |
           SDK="$PWD/sdks/iPhoneOS16.5.sdk"
@@ -66,18 +89,15 @@ jobs:
           python3 userland/mkeagl.py userland/src/eagl_slots.txt userland/mesa/gl.xml \
             userland/mesa/exported-gl.txt userland/src/eagl.c > obj/eagl_gen.h
           wc -l obj/eagl_gen.h
-          printf 'int hakios_osmesa_stub;\n' > stub.c
           # Ubuntu's clang driver does not fill in the image ld64.lld is making, so arch and
           # platform go through explicitly (the macOS xnu-clang wrapper does this for us there).
           LD='-fuse-ld=/usr/local/bin/ld64.lld -Wl,-arch,arm64 -Wl,-platform_version,ios,16.5,16.5'
-          clang -target arm64-apple-ios16.5 -isysroot "$SDK" -dynamiclib $LD \
-            -install_name /usr/lib/libOSMesa.8.dylib -o libOSMesa.8.dylib stub.c
           if ! clang -target arm64-apple-ios16.5 -isysroot "$SDK" -O1 -dynamiclib -v $LD \
               -Wl,-adhoc_codesign \
               -install_name /redwood/lib/libhakios.gl.dylib -Iobj \
               -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
               libOSMesa.8.dylib -o libhakios.gl.dylib \
-              userland/src/eagl.c userland/src/gl_osmesa.c -undefined dynamic_lookup; then
+              userland/src/eagl.c userland/src/gl_osmesa.c; then
             echo "link failed: the -v output above carries ld64.lld's own reason"
             exit 1
           fi
@@ -91,7 +111,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: userland-gl-linux
-          path: |
-            libhakios.gl.dylib
-            libOSMesa.8.dylib
+          path: libhakios.gl.dylib
           if-no-files-found: error
